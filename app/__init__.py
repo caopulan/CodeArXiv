@@ -16,7 +16,7 @@ def create_app(test_config=None):
     app = Flask(__name__, instance_relative_config=True)
 
     default_db_path = Path(app.instance_path) / "app.db"
-    default_data_dir = Path(app.root_path).parent / "arXivDaily-data"
+    default_data_dir = Path(app.root_path).parent / "CodexArXiv-data"
     data_dir_env = Path(os.getenv("PAPERS_DATA_DIR", str(default_data_dir))).expanduser()
     no_auth_env = os.getenv("NO_AUTH_MODE", "false").lower()
     no_auth_mode = no_auth_env in ("1", "true", "yes", "on")
