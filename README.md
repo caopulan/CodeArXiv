@@ -7,7 +7,7 @@
 
 [![License](https://img.shields.io/github/license/caopulan/arXivDaily?color=blue)](https://github.com/caopulan/arXivDaily/blob/main/LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
-[![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Dataset-yellow)](https://huggingface.co/datasets/caopu/CodexArXiv-data)
+[![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Dataset-yellow)](https://huggingface.co/datasets/caopu/CodeArXiv-data)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/caopulan/arXivDaily/pulls)
 
 </div>
@@ -51,7 +51,7 @@ Don't just read—curate and control your feed.
 
 * **🔒 Full Local Control:** Deploy the web interface entirely on your local machine. Your reading history, favorites, and preferences stay private.
 * **👥 Flexible User Modes:** Supports multi-user registration and login for shared deployments. For personal use, it defaults to a frictionless "No-User Mode." (Note: Authentication currently uses a lightweight password matching mechanism.)
-* **🔄 Effortless Data Sync:** We process and update ArXiv metadata and AI insights daily on the [CodexArXiv-data](https://huggingface.co/datasets/caopu/CodexArXiv-data) HuggingFace repository. Your local instance can automatically sync with our dataset using a single command/script.
+* **🔄 Effortless Data Sync:** We process and update ArXiv metadata and AI insights daily on the [CodeArXiv-data](https://huggingface.co/datasets/caopu/CodeArXiv-data) HuggingFace repository. Your local instance can automatically sync with our dataset using a single command/script.
 
 
 -----
@@ -95,19 +95,19 @@ uv sync -p 3.12 --extra hf
 
 a) Download all data without images
 ```
-uv run hf download caopu/CodexArXiv-data \
+uv run hf download caopu/CodeArXiv-data \
     --include "*.json"\
     --repo-type dataset \
-    --local-dir ./CodexArXiv-data
+    --local-dir ./CodeArXiv-data
 ```
 
 b) Download specific date data without images
 
 ```
-uv run hf download caopu/CodexArXiv-data \
+uv run hf download caopu/CodeArXiv-data \
     --include "2025-12-04.json"\
     --repo-type dataset \
-    --local-dir ./CodexArXiv-data
+    --local-dir ./CodeArXiv-data
 ```
 
 c) Download specific date data with images
@@ -123,9 +123,9 @@ Change `--include` to:
 d) Download all data
 
 ```
-uv run hf download caopu/CodexArXiv-data \
+uv run hf download caopu/CodeArXiv-data \
     --repo-type dataset \
-    --local-dir ./CodexArXiv-data
+    --local-dir ./CodeArXiv-data
 ```
 
 

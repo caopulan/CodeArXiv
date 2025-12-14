@@ -9,5 +9,5 @@ static/thumbnails/
 app/static/thumbnails/
 .DS_Store
 .idea/
-CodexArXiv-data/
+CodeArXiv-data/
 AGENTS.md
