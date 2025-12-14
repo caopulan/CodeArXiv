@@ -72,21 +72,30 @@ Get up and running in minutes.
 #### 2.  **Install dependencies**
 
     ```
-    conda create -n arxivdaily python=3.2
-    conda activate arxivdaily
-    pip install -r requirements.txt
+    # Install uv first if needed: https://docs.astral.sh/uv/
+    # Install Python 3.12 if you don't have it yet
+    uv python install 3.12
+
+    uv sync -p 3.12
+
+    # Optional: configure env vars
+    cp .env.example .env
     
     # Initialize database
-    flask --app app init-db
+    uv run flask --app app init-db
     ```
 
 #### 3.  **Download/Sync Data**
 
-You can download 
+To use the `hf` CLI, install the optional extra:
+
+```
+uv sync -p 3.12 --extra hf
+```
 
 a) Download all data without images
 ```
-hf download caopu/arXivDaily-data \
+uv run hf download caopu/arXivDaily-data \
     --include "*.json"\
     --repo-type dataset \
     --local-dir ./arXivDaily-data
@@ -95,7 +104,7 @@ hf download caopu/arXivDaily-data \
 b) Download specific date data without images
 
 ```
-hf download caopu/arXivDaily-data \
+uv run hf download caopu/arXivDaily-data \
     --include "2025-12-04.json"\
     --repo-type dataset \
     --local-dir ./arXivDaily-data
@@ -111,10 +120,10 @@ Change `--include` to:
 --include "2025-12-04.json" "images/2025-12-04/*
 ```
 
-c) Download all data
+d) Download all data
 
 ```
-hf download caopu/arXivDaily-data \
+uv run hf download caopu/arXivDaily-data \
     --repo-type dataset \
     --local-dir ./arXivDaily-data
 ```
@@ -123,10 +132,10 @@ hf download caopu/arXivDaily-data \
 #### 4.  **Run the App**
 
     ```
-    flask --app app run
+    uv run flask --app app run --debug
     ```
 
-Visit `http://localhost:8501` (or your specific port).
+Visit `http://localhost:5000`.
 
 -----
 
