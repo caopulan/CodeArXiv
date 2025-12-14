@@ -51,9 +51,10 @@ def init_db():
 
 
 def _ensure_columns(db_conn, table: str, columns: dict[str, str]) -> None:
-    existing = {
-        row["name"] for row in db_conn.execute(f"PRAGMA table_info({table})").fetchall()
-    }
+    info_rows = db_conn.execute(f"PRAGMA table_info({table})").fetchall()
+    if not info_rows:
+        return
+    existing = {row["name"] for row in info_rows}
     for col, ddl in columns.items():
         if col not in existing:
             db_conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
@@ -73,6 +74,8 @@ def apply_light_migrations() -> None:
     Does not drop or modify existing columns.
     """
     main_db = get_db()
+    if not _table_exists(main_db, "Users"):
+        return
     _ensure_columns(
         main_db,
         "Users",
