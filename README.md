@@ -64,14 +64,14 @@ Get up and running in minutes.
 
 #### 1.  **Clone the repository**
 
-    ```bash
+    ```
     git clone https://github.com/yourusername/CodeArXiv.git
     cd CodeArXiv
     ```
 
 #### 2.  **Install dependencies**
 
-    ```bash
+    ```
     conda create -n arxivdaily python=3.2
     conda activate arxivdaily
     pip install -r requirements.txt
@@ -122,7 +122,7 @@ hf download caopu/arXivDaily-data \
 
 #### 4.  **Run the App**
 
-    ```bash
+    ```
     flask --app app run
     ```
 
