@@ -14,6 +14,7 @@ from typing import List, Optional
 
 DEFAULT_INTERVAL_HOURS = 1.0
 DEFAULT_RETRY_MINUTES = 30.0
+DEFAULT_THUMB_WORKERS = 10
 
 _stop_requested = False
 
@@ -57,40 +58,36 @@ def _run_cmd(cmd: List[str], *, cwd: Path, timeout_s: Optional[int] = None) -> i
         return 127
 
 
-def _build_codex_fill_cmd(args: argparse.Namespace, codex_fill_path: Path) -> List[str]:
-    cmd = [sys.executable, str(codex_fill_path)]
-    if args.codex_model:
-        cmd += ["--model", str(args.codex_model)]
-    if args.codex_batch_size:
-        cmd += ["--batch-size", str(int(args.codex_batch_size))]
-    if args.codex_timeout:
-        cmd += ["--timeout", str(int(args.codex_timeout))]
-    if args.codex_sleep is not None:
-        cmd += ["--sleep", str(float(args.codex_sleep))]
-    if args.codex_overwrite:
-        cmd += ["--overwrite"]
-    return cmd
-
-
 def _run_one_cycle(args: argparse.Namespace) -> bool:
     cwd = Path(args.workdir).resolve()
     run_daily_path = Path(args.run_daily).resolve()
     codex_fill_path = Path(args.codex_fill).resolve()
 
     ok = True
-    rc = _run_cmd([sys.executable, str(run_daily_path)], cwd=cwd)
-    ok = ok and (rc == 0)
+    cmd = [sys.executable, str(run_daily_path), "--thumb-workers", str(int(args.thumb_workers))]
+    if args.skip_codex:
+        cmd.append("--skip-codex")
+    cmd += ["--codex-fill", str(codex_fill_path)]
+    if args.codex_model:
+        cmd += ["--codex-model", str(args.codex_model)]
+    if args.codex_batch_size:
+        cmd += ["--codex-batch-size", str(int(args.codex_batch_size))]
+    if args.codex_timeout:
+        cmd += ["--codex-timeout", str(int(args.codex_timeout))]
+    if args.codex_sleep is not None:
+        cmd += ["--codex-sleep", str(float(args.codex_sleep))]
+    if args.codex_overwrite:
+        cmd += ["--codex-overwrite"]
 
-    if not args.skip_codex:
-        rc = _run_cmd(_build_codex_fill_cmd(args, codex_fill_path), cwd=cwd)
-        ok = ok and (rc == 0)
+    rc = _run_cmd(cmd, cwd=cwd)
+    ok = ok and (rc == 0)
 
     return ok
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Long-running daily updater: run run_daily.py + codex_fill_zh.py on a fixed interval."
+        description="Long-running daily updater: run run_daily.py on a fixed interval."
     )
     parser.add_argument(
         "--workdir",
@@ -108,7 +105,7 @@ def main() -> int:
         "--codex-fill",
         type=Path,
         default=Path(__file__).resolve().parent / "codex_fill_zh.py",
-        help="Path to codex_fill_zh.py.",
+        help="Path to codex_fill_zh.py (used by run_daily.py).",
     )
     parser.add_argument(
         "--interval-hours",
@@ -130,19 +127,26 @@ def main() -> int:
     parser.add_argument(
         "--skip-codex",
         action="store_true",
-        help="Skip running codex_fill_zh.py (only run run_daily.py).",
+        help="Skip running codex fill (only run list/metadata + thumbnails).",
     )
 
-    parser.add_argument("--codex-model", type=str, default=None, help="Forwarded to codex_fill_zh.py --model.")
     parser.add_argument(
-        "--codex-batch-size", type=int, default=5, help="Forwarded to codex_fill_zh.py --batch-size."
+        "--thumb-workers",
+        type=int,
+        default=DEFAULT_THUMB_WORKERS,
+        help=f"Forwarded to run_daily.py --thumb-workers (default: {DEFAULT_THUMB_WORKERS}).",
     )
-    parser.add_argument("--codex-timeout", type=int, default=300, help="Forwarded to codex_fill_zh.py --timeout.")
-    parser.add_argument("--codex-sleep", type=float, default=0.2, help="Forwarded to codex_fill_zh.py --sleep.")
+
+    parser.add_argument("--codex-model", type=str, default=None, help="Forwarded to run_daily.py --codex-model.")
+    parser.add_argument(
+        "--codex-batch-size", type=int, default=5, help="Forwarded to run_daily.py --codex-batch-size."
+    )
+    parser.add_argument("--codex-timeout", type=int, default=300, help="Forwarded to run_daily.py --codex-timeout.")
+    parser.add_argument("--codex-sleep", type=float, default=0.2, help="Forwarded to run_daily.py --codex-sleep.")
     parser.add_argument(
         "--codex-overwrite",
         action="store_true",
-        help="Forwarded to codex_fill_zh.py --overwrite.",
+        help="Forwarded to run_daily.py --codex-overwrite.",
     )
 
     args = parser.parse_args()
@@ -178,4 +182,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

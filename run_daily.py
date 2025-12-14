@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
+import concurrent.futures
 import json
 import os
 import re
+import subprocess
+import sys
 import tempfile
 import time
 import urllib.parse
@@ -27,6 +31,16 @@ THUMB_PAGES = 5
 THUMB_RENDER_DPI = 300
 THUMB_LOWRES_MAX_WIDTH = 1200
 THUMBNAIL_VERSION = 2
+DEFAULT_THUMB_WORKERS = 10
+
+
+@dataclass(frozen=True)
+class ThumbnailUpdate:
+    arxiv_id: str
+    ok: bool
+    large_png: Path
+    small_png: Path
+    error: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -191,8 +205,121 @@ def _generate_thumbnails_for_pdf(pdf_path: Path, date_str: str, arxiv_id: str) -
     )
     return large_png, small_png
 
-def main() -> int:
+
+def _build_codex_fill_cmd(args: argparse.Namespace, *, input_path: Path) -> List[str]:
+    cmd = [sys.executable, str(Path(args.codex_fill).resolve()), "--input", str(input_path)]
+    if args.codex_model:
+        cmd += ["--model", str(args.codex_model)]
+    if args.codex_batch_size:
+        cmd += ["--batch-size", str(int(args.codex_batch_size))]
+    if args.codex_timeout:
+        cmd += ["--timeout", str(int(args.codex_timeout))]
+    if args.codex_sleep is not None:
+        cmd += ["--sleep", str(float(args.codex_sleep))]
+    if args.codex_overwrite:
+        cmd += ["--overwrite"]
+    return cmd
+
+
+def _thumbnail_worker(*, arxiv_id: str, pdf_url: str, date_str: str, pdf_cfg: FetchConfig) -> ThumbnailUpdate:
+    large_png, small_png = _thumbnail_paths(date_str, arxiv_id)
+    try:
+        with tempfile.TemporaryDirectory(prefix="codexiv_pdf_") as tmp:
+            pdf_path = Path(tmp) / "paper.pdf"
+            pdf_path.write_bytes(_fetch_bytes(pdf_url, pdf_cfg))
+            _generate_thumbnails_for_pdf(pdf_path, date_str, arxiv_id)
+        return ThumbnailUpdate(arxiv_id=arxiv_id, ok=True, large_png=large_png, small_png=small_png)
+    except Exception as e:  # noqa: BLE001
+        return ThumbnailUpdate(arxiv_id=arxiv_id, ok=False, large_png=large_png, small_png=small_png, error=str(e))
+
+
+def _apply_thumbnail_update(entry: Dict[str, Any], update: ThumbnailUpdate) -> bool:
+    if not isinstance(entry.get("errors"), dict):
+        entry["errors"] = {}
+    errors: Dict[str, Any] = entry["errors"]
+    changed = False
+
+    if update.ok:
+        if entry.get("thumbnails_generated") is not True:
+            entry["thumbnails_generated"] = True
+            changed = True
+        if entry.get("thumbnail_300_path") != str(update.large_png):
+            entry["thumbnail_300_path"] = str(update.large_png)
+            changed = True
+        if entry.get("thumbnail_small_path") != str(update.small_png):
+            entry["thumbnail_small_path"] = str(update.small_png)
+            changed = True
+        if entry.get("thumbnail_100_path") != str(update.small_png):
+            entry["thumbnail_100_path"] = str(update.small_png)
+            changed = True
+        if entry.get("thumbnail_pages") != THUMB_PAGES:
+            entry["thumbnail_pages"] = THUMB_PAGES
+            changed = True
+        if entry.get("thumbnail_render_dpi") != THUMB_RENDER_DPI:
+            entry["thumbnail_render_dpi"] = THUMB_RENDER_DPI
+            changed = True
+        if entry.get("thumbnail_small_max_width") != THUMB_LOWRES_MAX_WIDTH:
+            entry["thumbnail_small_max_width"] = THUMB_LOWRES_MAX_WIDTH
+            changed = True
+        if entry.get("thumbnail_version") != THUMBNAIL_VERSION:
+            entry["thumbnail_version"] = THUMBNAIL_VERSION
+            changed = True
+
+        if errors.get("thumbnail"):
+            errors.pop("thumbnail", None)
+            changed = True
+    else:
+        if entry.get("thumbnails_generated") is not False:
+            entry["thumbnails_generated"] = False
+            changed = True
+        err = update.error or "Unknown error"
+        if errors.get("thumbnail") != err:
+            errors["thumbnail"] = err
+            changed = True
+
+    if changed:
+        entry["updated_at"] = _now_iso()
+    return changed
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Fetch arXiv list + metadata, then run thumbnail generation and (optional) Codex JSON fill in parallel."
+        )
+    )
+    parser.add_argument(
+        "--thumb-workers",
+        type=int,
+        default=DEFAULT_THUMB_WORKERS,
+        help=f"Thumbnail generation concurrency (default: {DEFAULT_THUMB_WORKERS}).",
+    )
+    parser.add_argument(
+        "--skip-codex",
+        action="store_true",
+        help="Skip running codex_fill_zh.py after metadata is fetched.",
+    )
+    parser.add_argument(
+        "--codex-fill",
+        type=Path,
+        default=Path(__file__).resolve().parent / "codex_fill_zh.py",
+        help="Path to codex_fill_zh.py (used after metadata is fetched).",
+    )
+    parser.add_argument("--codex-model", type=str, default=None, help="Forwarded to codex_fill_zh.py --model.")
+    parser.add_argument(
+        "--codex-batch-size", type=int, default=5, help="Forwarded to codex_fill_zh.py --batch-size."
+    )
+    parser.add_argument("--codex-timeout", type=int, default=300, help="Forwarded to codex_fill_zh.py --timeout.")
+    parser.add_argument("--codex-sleep", type=float, default=0.2, help="Forwarded to codex_fill_zh.py --sleep.")
+    parser.add_argument(
+        "--codex-overwrite",
+        action="store_true",
+        help="Forwarded to codex_fill_zh.py --overwrite.",
+    )
+
+    args = parser.parse_args(argv)
     cfg = FetchConfig()
+    overall_rc = 0
 
     grouped: Dict[str, Dict[str, set[str]]] = {}
     for category in LIST_CATEGORIES:
@@ -286,78 +413,94 @@ def main() -> int:
             user_agent=cfg.user_agent,
         )
 
-        for idx, arxiv_id in enumerate(ids, start=1):
+        codex_proc: Optional[subprocess.Popen[str]] = None
+        codex_rc = 0
+        if not args.skip_codex:
+            codex_fill_path = Path(args.codex_fill).resolve()
+            if not codex_fill_path.exists():
+                print(
+                    f"[Step4] {date_str}: ERROR codex_fill_zh not found: {codex_fill_path}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                codex_rc = 2
+            else:
+                cmd = _build_codex_fill_cmd(args, input_path=results_path)
+                print(f"[Step4] {date_str}: start codex fill -> {results_path}", flush=True)
+                codex_proc = subprocess.Popen(cmd)
+
+        thumb_updates: Dict[str, ThumbnailUpdate] = {}
+        to_generate: List[Tuple[str, str]] = []
+        for arxiv_id in ids:
             entry = results.get(arxiv_id) or {}
-            entry.setdefault("errors", {})
-
-            large_png, small_png = _thumbnail_paths(date_str, arxiv_id)
-            # If both thumbnails already exist, do not re-download the PDF just to regenerate them.
-            thumbs_exist = large_png.exists() and small_png.exists()
-            if thumbs_exist:
-                changed = False
-                if entry.get("thumbnails_generated") is not True:
-                    entry["thumbnails_generated"] = True
-                    changed = True
-                if entry.get("thumbnail_300_path") != str(large_png):
-                    entry["thumbnail_300_path"] = str(large_png)
-                    changed = True
-                if entry.get("thumbnail_small_path") != str(small_png):
-                    entry["thumbnail_small_path"] = str(small_png)
-                    changed = True
-                # Backward-compatible alias (older schema used *_100_path).
-                if entry.get("thumbnail_100_path") != str(small_png):
-                    entry["thumbnail_100_path"] = str(small_png)
-                    changed = True
-                if entry.get("thumbnail_pages") != THUMB_PAGES:
-                    entry["thumbnail_pages"] = THUMB_PAGES
-                    changed = True
-                if entry.get("thumbnail_render_dpi") != THUMB_RENDER_DPI:
-                    entry["thumbnail_render_dpi"] = THUMB_RENDER_DPI
-                    changed = True
-                if entry.get("thumbnail_small_max_width") != THUMB_LOWRES_MAX_WIDTH:
-                    entry["thumbnail_small_max_width"] = THUMB_LOWRES_MAX_WIDTH
-                    changed = True
-                if entry.get("thumbnail_version") != THUMBNAIL_VERSION:
-                    entry["thumbnail_version"] = THUMBNAIL_VERSION
-                    changed = True
-                if isinstance(entry.get("errors"), dict) and entry.get("errors", {}).get("thumbnail"):
-                    entry.setdefault("errors", {}).pop("thumbnail", None)
-                    changed = True
-                if changed:
-                    entry["updated_at"] = _now_iso()
-                results[arxiv_id] = entry
-                if changed:
-                    _json_dump_atomic(results, results_path)
-                continue
-
             pdf_url = (entry.get("pdf_url") or f"https://arxiv.org/pdf/{arxiv_id}.pdf").strip()
-            try:
-                with tempfile.TemporaryDirectory(prefix="codexiv_pdf_") as tmp:
-                    pdf_path = Path(tmp) / "paper.pdf"
-                    pdf_path.write_bytes(_fetch_bytes(pdf_url, pdf_cfg))
-                    gen_large, gen_small = _generate_thumbnails_for_pdf(pdf_path, date_str, arxiv_id)
-                entry["thumbnails_generated"] = True
-                entry["thumbnail_300_path"] = str(gen_large)
-                entry["thumbnail_small_path"] = str(gen_small)
-                entry["thumbnail_100_path"] = str(gen_small)
-                entry["thumbnail_pages"] = THUMB_PAGES
-                entry["thumbnail_render_dpi"] = THUMB_RENDER_DPI
-                entry["thumbnail_small_max_width"] = THUMB_LOWRES_MAX_WIDTH
-                entry["thumbnail_version"] = THUMBNAIL_VERSION
-                entry["updated_at"] = _now_iso()
-                entry.setdefault("errors", {}).pop("thumbnail", None)
-            except Exception as e:  # noqa: BLE001
-                entry["thumbnails_generated"] = False
-                entry.setdefault("errors", {})["thumbnail"] = str(e)
+            large_png, small_png = _thumbnail_paths(date_str, arxiv_id)
+            if large_png.exists() and small_png.exists():
+                thumb_updates[arxiv_id] = ThumbnailUpdate(
+                    arxiv_id=arxiv_id, ok=True, large_png=large_png, small_png=small_png
+                )
+            else:
+                to_generate.append((arxiv_id, pdf_url))
 
-            results[arxiv_id] = entry
-            _json_dump_atomic(results, results_path)
-            if idx % 10 == 0:
-                print(f"[Step3] {date_str}: thumbnails {idx}/{len(ids)}")
-            time.sleep(0.2)
-        print(f"[Step3] {date_str}: thumbnails done -> {IMAGES_DIR / date_str}")
+        workers = max(1, int(args.thumb_workers))
+        if to_generate:
+            print(
+                f"[Step3] {date_str}: thumbnails start (workers={workers}, tasks={len(to_generate)})",
+                flush=True,
+            )
+        else:
+            print(f"[Step3] {date_str}: thumbnails start (nothing to generate)", flush=True)
 
-    return 0
+        completed = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+            fut_to_id = {
+                ex.submit(_thumbnail_worker, arxiv_id=arxiv_id, pdf_url=pdf_url, date_str=date_str, pdf_cfg=pdf_cfg): (
+                    arxiv_id
+                )
+                for arxiv_id, pdf_url in to_generate
+            }
+            for fut in concurrent.futures.as_completed(fut_to_id):
+                arxiv_id = fut_to_id[fut]
+                try:
+                    upd = fut.result()
+                except Exception as e:  # noqa: BLE001
+                    large_png, small_png = _thumbnail_paths(date_str, arxiv_id)
+                    upd = ThumbnailUpdate(
+                        arxiv_id=arxiv_id, ok=False, large_png=large_png, small_png=small_png, error=str(e)
+                    )
+                thumb_updates[arxiv_id] = upd
+                completed += 1
+                if completed % 10 == 0 or completed == len(to_generate):
+                    print(f"[Step3] {date_str}: thumbnails {completed}/{len(to_generate)}", flush=True)
+        print(f"[Step3] {date_str}: thumbnails done -> {IMAGES_DIR / date_str}", flush=True)
+
+        if codex_proc is not None:
+            codex_rc = codex_proc.wait()
+        if not args.skip_codex:
+            print(f"[Step4] {date_str}: codex fill done rc={codex_rc} -> {results_path}", flush=True)
+
+        if codex_rc != 0 and overall_rc == 0:
+            overall_rc = codex_rc
+
+        # Reload results to include Codex updates, then apply thumbnail updates in one atomic write.
+        with results_path.open("r", encoding="utf-8") as f:
+            loaded = json.load(f)
+        if not isinstance(loaded, dict):
+            raise RuntimeError(f"Unexpected results format in {results_path} (expected dict).")
+        results_latest: Dict[str, Dict[str, Any]] = loaded
+
+        changed_total = 0
+        for arxiv_id, upd in thumb_updates.items():
+            entry = results_latest.get(arxiv_id) or {"arxiv_id": arxiv_id}
+            if _apply_thumbnail_update(entry, upd):
+                changed_total += 1
+            results_latest[arxiv_id] = entry
+
+        if changed_total:
+            _json_dump_atomic(results_latest, results_path)
+            print(f"[Step3] {date_str}: thumbnails saved (updated {changed_total}) -> {results_path}", flush=True)
+
+    return overall_rc
 
 
 if __name__ == "__main__":
