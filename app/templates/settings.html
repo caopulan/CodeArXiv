@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}Settings · CodeArXiv{% endblock %}
+{% block content %}
+<div class="floating-card p-4 mb-3 d-flex flex-column flex-md-row align-items-start align-items-md-center justify-content-between gap-3">
+  <div>
+    <h1 class="h4 mb-1">Settings</h1>
+    <p class="text-muted mb-0">{{ lang_copy.settings_intro }}</p>
+  </div>
+  <a class="btn btn-outline-secondary" href="{{ url_for('feed.index') }}">{{ lang_copy.settings_back }}</a>
+</div>
+
+<div class="card shadow-sm border-0 settings-card floating-card">
+  <div class="card-body">
+    <form method="post" class="row g-4">
+      <div class="col-12">
+        <h6 class="text-muted mb-2">{{ lang_copy.language_label }}</h6>
+        <p class="text-muted small mb-2">{{ lang_copy.language_helper }}</p>
+        <div class="segmented-toggle d-inline-flex gap-2">
+          <input type="radio" class="btn-check" name="language_preference" id="langEn" value="en" {% if current_language == 'en' %}checked{% endif %}>
+          <label class="btn" for="langEn">{{ lang_copy.language_option_en }}</label>
+          <input type="radio" class="btn-check" name="language_preference" id="langZh" value="zh" {% if current_language == 'zh' %}checked{% endif %}>
+          <label class="btn" for="langZh">{{ lang_copy.language_option_zh }}</label>
+        </div>
+      </div>
+      <div class="col-lg-6">
+        <h6 class="text-muted mb-2">{{ lang_copy.filters_categories_label }}</h6>
+        <div class="d-flex flex-wrap gap-2">
+          {% for cat in category_options %}
+            {% set checked = cat in filters.categories %}
+            <label class="pill-check {% if checked %}active{% endif %}">
+              <input type="checkbox" name="category" value="{{ cat }}" {% if checked %}checked{% endif %}>
+              {{ cat }}
+            </label>
+          {% endfor %}
+        </div>
+        <p class="text-muted small mt-2 mb-0">{{ lang_copy.settings_categories_hint }}</p>
+      </div>
+      <div class="col-lg-6">
+        <h6 class="text-muted mb-2">{{ lang_copy.settings_similarity_heading }}</h6>
+        {% if user_favorites %}
+          <div class="d-flex flex-wrap gap-2">
+            {% for fav in user_favorites %}
+              {% set checked = fav.id in filters.sim_favorites %}
+              <label class="pill-check {% if checked %}active{% endif %}">
+                <input type="checkbox" name="sim_favorite" value="{{ fav.id }}" {% if checked %}checked{% endif %}>
+                {{ fav.name }}
+              </label>
+            {% endfor %}
+          </div>
+          <p class="text-muted small mt-2 mb-0">{{ lang_copy.settings_similarity_hint }}</p>
+        {% else %}
+          <p class="text-muted small mb-0">{{ lang_copy.settings_similarity_empty }}</p>
+        {% endif %}
+      </div>
+      <div class="col-lg-6">
+        <h6 class="text-muted mb-2">{{ lang_copy.settings_whitelist_heading }}</h6>
+        <div class="d-flex flex-wrap gap-2">
+          {% set wl = filters.tags.whitelist if filters.tags else [] %}
+          {% for tag in tag_options %}
+            {% set checked = tag in wl %}
+            <label class="pill-check {% if checked %}active{% endif %}">
+              <input type="checkbox" name="tag_whitelist" value="{{ tag }}" {% if checked %}checked{% endif %}>
+              {{ tag }}
+            </label>
+          {% endfor %}
+        </div>
+        <p class="text-muted small mt-2 mb-0">{{ lang_copy.settings_whitelist_hint }}</p>
+      </div>
+      <div class="col-lg-6">
+        <h6 class="text-muted mb-2">{{ lang_copy.settings_blacklist_heading }}</h6>
+        <div class="d-flex flex-wrap gap-2">
+          {% set bl = filters.tags.blacklist if filters.tags else [] %}
+          {% for tag in tag_options %}
+            {% set checked = tag in bl %}
+            <label class="pill-check {% if checked %}active{% endif %}">
+              <input type="checkbox" name="tag_blacklist" value="{{ tag }}" {% if checked %}checked{% endif %}>
+              {{ tag }}
+            </label>
+          {% endfor %}
+        </div>
+        <p class="text-muted small mt-2 mb-0">{{ lang_copy.settings_blacklist_hint }}</p>
+      </div>
+      <div class="col-12 d-flex gap-2 mt-2">
+        <button class="btn btn-primary" type="submit">{{ lang_copy.settings_save }}</button>
+        <a class="btn btn-outline-secondary" href="{{ url_for('feed.index') }}">{{ lang_copy.settings_back }}</a>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+  // Toggle pill active class on change for instant feedback
+  document.querySelectorAll('.pill-check input').forEach((input) => {
+    input.addEventListener('change', () => {
+      input.parentElement.classList.toggle('active', input.checked);
+    });
+  });
+</script>
+{% endblock %}
