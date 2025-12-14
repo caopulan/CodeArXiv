@@ -21,7 +21,7 @@ LIST_CATEGORIES = ["cs.CV", "cs.AI", "cs.CG", "cs.CL"]
 LIST_SHOW = 2000
 LIST_URL_TEMPLATE = "https://arxiv.org/list/{category}/pastweek?show={show}"
 ARXIV_API_URL = "https://export.arxiv.org/api/query"
-RESULTS_DIR = Path("results")
+RESULTS_DIR = Path("CodeArXiv-data")
 IMAGES_DIR = RESULTS_DIR / "images"
 THUMB_PAGES = 5
 THUMB_RENDER_DPI = 300
