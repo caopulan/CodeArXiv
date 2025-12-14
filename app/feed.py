@@ -56,6 +56,8 @@ LANGUAGE_COPY = {
         "filters_all_favorites": "All favorites",
         "filters_hint": "Tune filters in Settings.",
         "refresh": "Refresh",
+        "nav_date_label": "Date",
+        "nav_date_aria": "Select date",
         "badge_blacklist": "Blacklisted",
         "badge_whitelist": "Whitelisted",
         "favorite_saved": "★ Saved",
@@ -109,6 +111,8 @@ LANGUAGE_COPY = {
         "filters_all_favorites": "全部收藏夹",
         "filters_hint": "过滤条件在 Settings 中设置。",
         "refresh": "刷新",
+        "nav_date_label": "日期",
+        "nav_date_aria": "选择日期",
         "badge_blacklist": "黑名单",
         "badge_whitelist": "白名单",
         "favorite_saved": "★ 已收藏",
@@ -157,6 +161,28 @@ def _current_language() -> str:
 def inject_language_context():
     lang = _current_language()
     return {"current_language": lang, "lang_copy": _copy_for_language(lang)}
+
+
+@bp.app_context_processor
+def inject_nav_date_context():
+    dates = paper_store.list_dates()
+    selected = getattr(g, "nav_date", None)
+    selected_date: Optional[dt.date] = selected if isinstance(selected, dt.date) else None
+    if selected_date is None:
+        date_str = request.args.get("date")
+        if date_str:
+            try:
+                selected_date = dt.date.fromisoformat(date_str)
+            except ValueError:
+                selected_date = None
+    if selected_date is None:
+        selected_date = dates[-1] if dates else dt.date.today()
+
+    return {
+        "nav_min_date": dates[0].isoformat() if dates else None,
+        "nav_max_date": dates[-1].isoformat() if dates else None,
+        "nav_selected_date": selected_date.isoformat(),
+    }
 
 
 def _latest_pub_date() -> dt.date:
@@ -592,6 +618,7 @@ def index():
     if target_date is None:
         target_date = _latest_pub_date()
 
+    g.nav_date = target_date
     rows = paper_store.load_date(target_date)
 
     category_options = list(DEFAULT_CATEGORIES)
@@ -833,6 +860,8 @@ def paper_detail(paper_id: str):
     paper = _apply_language_to_paper(paper, language)
     if not paper.get("pub_date") and paper_date:
         paper["pub_date"] = paper_date.isoformat()
+    if paper_date:
+        g.nav_date = paper_date
     pdf_link = paper["pdf_path"] or f"https://arxiv.org/abs/{paper_id}"
     user_favorites = []
     last_created_fav = session.pop("last_created_fav", None)

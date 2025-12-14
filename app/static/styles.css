@@ -81,6 +81,28 @@ a:hover {
   color: var(--ink);
 }
 
+.nav-date-form {
+  padding-left: 6px;
+  padding-right: 6px;
+}
+
+.nav-date-label {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.nav-date-input {
+  width: 152px;
+  border-radius: 12px;
+  font-weight: 600;
+}
+
+@media (min-width: 992px) {
+  .nav-date-input {
+    width: 168px;
+  }
+}
+
 .btn-primary {
   background: linear-gradient(135deg, var(--primary), var(--primary-strong));
   border: none;

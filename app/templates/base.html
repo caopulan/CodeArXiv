@@ -29,6 +29,22 @@
             <a class="nav-link" href="{{ url_for('feed.settings') }}">Settings</a>
           </li>
         </ul>
+        {% if g.user %}
+        <form class="d-flex align-items-center gap-2 nav-date-form my-2 my-lg-0" method="get" action="{{ url_for('feed.index') }}">
+          <label class="nav-date-label text-muted small d-none d-lg-inline" for="navDate">{{ lang_copy.nav_date_label }}</label>
+          <input
+            id="navDate"
+            class="form-control form-control-sm nav-date-input"
+            type="date"
+            name="date"
+            value="{{ nav_selected_date or '' }}"
+            {% if nav_min_date %}min="{{ nav_min_date }}"{% endif %}
+            {% if nav_max_date %}max="{{ nav_max_date }}"{% endif %}
+            aria-label="{{ lang_copy.nav_date_aria }}"
+            onchange="this.form.submit()"
+          >
+        </form>
+        {% endif %}
         <ul class="navbar-nav ms-auto">
           {% if g.user %}
           <li class="nav-item">
