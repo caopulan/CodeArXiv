@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import List, Optional
 
 
-DEFAULT_INTERVAL_HOURS = 24.0
+DEFAULT_INTERVAL_HOURS = 1.0
 DEFAULT_RETRY_MINUTES = 30.0
 
 _stop_requested = False
