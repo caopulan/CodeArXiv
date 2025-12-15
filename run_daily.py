@@ -226,7 +226,11 @@ def _thumbnail_worker(*, arxiv_id: str, pdf_url: str, date_str: str, pdf_cfg: Fe
     try:
         with tempfile.TemporaryDirectory(prefix="codexiv_pdf_") as tmp:
             pdf_path = Path(tmp) / "paper.pdf"
-            pdf_path.write_bytes(_fetch_bytes(pdf_url, pdf_cfg))
+            try:
+                pdf_path.write_bytes(_fetch_bytes(pdf_url, pdf_cfg))
+            except Exception:
+                # Let thumbnail generation fall back to a placeholder image.
+                pass
             _generate_thumbnails_for_pdf(pdf_path, date_str, arxiv_id)
         return ThumbnailUpdate(arxiv_id=arxiv_id, ok=True, large_png=large_png, small_png=small_png)
     except Exception as e:  # noqa: BLE001
