@@ -17,6 +17,15 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 from flask import current_app
 
 
+IMAGE_PATH_KEYS = (
+    "image_path",
+    "thumbnail_300_path",
+    "thumbnail_path",
+    "thumbnail_small_path",
+    "thumbnail_100_path",
+)
+
+
 def _data_dir() -> Path:
     base_cfg = current_app.config.get("PAPERS_DATA_DIR", "CodeArXiv-data")
     base = Path(base_cfg).expanduser()
@@ -26,6 +35,72 @@ def _data_dir() -> Path:
         base = base.resolve()
     base.mkdir(parents=True, exist_ok=True)
     return base
+
+
+def _is_url(value: str) -> bool:
+    return bool(re.match(r"^https?://", value, flags=re.IGNORECASE))
+
+
+def _normalize_local_asset_path(raw_path: Any) -> Optional[str]:
+    if not raw_path:
+        return None
+    value = str(raw_path).strip()
+    if not value:
+        return None
+    if _is_url(value):
+        return value
+
+    # Be tolerant of values like:
+    # - CodeArXiv-data/images/YYYY-MM-DD/xxxx.png
+    # - /abs/path/.../CodeArXiv-data/images/YYYY-MM-DD/xxxx.png
+    # - app/static/...
+    value = value.replace("\\", "/")
+    path_obj = Path(value)
+    parts = path_obj.parts
+
+    if "static" in parts:
+        idx = parts.index("static")
+        rel = Path(*parts[idx + 1 :])
+        return str(rel)
+
+    if "images" in parts:
+        idx = parts.index("images")
+        rel = Path(*parts[idx:])
+        return str(rel)
+
+    return value
+
+
+def _local_file_exists(data_dir: Path, path_str: str) -> bool:
+    path_obj = Path(path_str)
+    if path_obj.is_absolute():
+        return path_obj.exists()
+    if (data_dir / path_obj).exists():
+        return True
+    # Support values that still include the data dir prefix (e.g. CodeArXiv-data/images/...).
+    if (data_dir.parent / path_obj).exists():
+        return True
+    return False
+
+
+def _infer_image_path_from_filesystem(data_dir: Path, *, date_str: str, paper_id: str) -> Optional[str]:
+    if not paper_id:
+        return None
+    safe_id = str(paper_id).replace("/", "_").strip()
+    if not safe_id:
+        return None
+    date_dir = data_dir / "images" / date_str
+    if not date_dir.exists():
+        return None
+
+    large = date_dir / f"{safe_id}.png"
+    if large.exists():
+        return str(Path("images") / date_str / large.name)
+
+    small = date_dir / f"{safe_id}_small.png"
+    if small.exists():
+        return str(Path("images") / date_str / small.name)
+    return None
 
 
 def _date_path(date_val: Union[dt.date, str]) -> Path:
@@ -117,13 +192,17 @@ def _normalize_paper(raw: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(list_categories, list) and list_categories:
             derived_category = ", ".join(str(c).strip() for c in list_categories if str(c).strip()) or derived_category
         paper["category"] = str(derived_category or "").strip()
+
+    for key in IMAGE_PATH_KEYS:
+        if paper.get(key):
+            paper[key] = _normalize_local_asset_path(paper[key])
+
     if not paper.get("image_path"):
-        paper["image_path"] = (
-            paper.get("thumbnail_300_path")
-            or paper.get("thumbnail_path")
-            or paper.get("thumbnail_small_path")
-            or paper.get("thumbnail_100_path")
-        )
+        for key in ("thumbnail_300_path", "thumbnail_path", "thumbnail_small_path", "thumbnail_100_path"):
+            candidate = paper.get(key)
+            if candidate:
+                paper["image_path"] = candidate
+                break
     # Normalize tags
     tags_raw = paper.get("tags")
     if isinstance(tags_raw, str):
@@ -144,10 +223,38 @@ def _normalize_paper(raw: Dict[str, Any]) -> Dict[str, Any]:
     return paper
 
 
-def load_date(date_val: Union[dt.date, str]) -> List[Dict[str, Any]]:
+def _attach_images(date_str: str, papers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    data_dir = _data_dir()
+    for paper in papers:
+        for key in IMAGE_PATH_KEYS:
+            if paper.get(key):
+                paper[key] = _normalize_local_asset_path(paper[key])
+
+        image_path = paper.get("image_path")
+        if image_path and not _is_url(str(image_path)):
+            if not _local_file_exists(data_dir, str(image_path)):
+                paper["image_path"] = None
+                image_path = None
+
+        if not image_path:
+            inferred = _infer_image_path_from_filesystem(
+                data_dir,
+                date_str=date_str,
+                paper_id=str(paper.get("id") or paper.get("arxiv_id") or "").strip(),
+            )
+            if inferred:
+                paper["image_path"] = inferred
+    return papers
+
+
+def load_date(date_val: Union[dt.date, str], *, with_images: bool = True) -> List[Dict[str, Any]]:
     path = _date_path(date_val)
     raw = _load_raw(path)
-    return [_normalize_paper(item) for item in raw if isinstance(item, dict)]
+    papers = [_normalize_paper(item) for item in raw if isinstance(item, dict)]
+    if not with_images:
+        return papers
+    date_str = date_val if isinstance(date_val, str) else date_val.isoformat()
+    return _attach_images(date_str, papers)
 
 
 def save_date(date_val: Union[dt.date, str], papers: Iterable[Dict[str, Any]]) -> None:
@@ -163,7 +270,7 @@ def merge_papers(date_val: Union[dt.date, str], new_papers: Iterable[Dict[str, A
 
     Returns the number of newly added ids.
     """
-    existing = {p["id"]: p for p in load_date(date_val)}
+    existing = {p["id"]: p for p in load_date(date_val, with_images=False)}
     added = 0
     for paper in new_papers:
         normalized = _normalize_paper(paper)
@@ -188,8 +295,8 @@ def find_by_id(paper_id: str) -> Tuple[Optional[Dict[str, Any]], Optional[dt.dat
     """Search all date files (newest first) for a paper id."""
     pid = str(paper_id).strip()
     for date_val in reversed(list_dates()):
-        items = load_date(date_val)
+        items = load_date(date_val, with_images=False)
         for paper in items:
             if paper.get("id") == pid:
-                return paper, date_val
+                return _attach_images(date_val.isoformat(), [paper])[0], date_val
     return None, None

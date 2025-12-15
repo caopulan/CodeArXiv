@@ -202,7 +202,14 @@ def _format_paper(row) -> Dict[str, Any]:
             tags = [t.strip() for t in tags.split(",") if t.strip()]
     if isinstance(tags, list):
         tags = [str(t).strip() for t in tags if str(t).strip()]
-    image_path = _normalize_image_path(data.get("image_path"))
+    raw_image_path = (
+        data.get("image_path")
+        or data.get("thumbnail_300_path")
+        or data.get("thumbnail_path")
+        or data.get("thumbnail_small_path")
+        or data.get("thumbnail_100_path")
+    )
+    image_path = _normalize_image_path(raw_image_path)
     thumb_small, thumb_full = _resolve_thumb_variants(image_path)
     image_url = _build_image_url(image_path)
     thumb_small_url = _build_image_url(thumb_small)
@@ -298,11 +305,15 @@ def _strip_images_if_missing(papers: list[Dict[str, Any]], target_date: dt.date)
 def _normalize_image_path(raw_path: Optional[str]) -> Optional[str]:
     if not raw_path:
         return None
-    path_obj = Path(raw_path)
+    path_obj = Path(str(raw_path))
     parts = path_obj.parts
     if "static" in parts:
         idx = parts.index("static")
         rel = Path(*parts[idx + 1 :])
+        return str(rel)
+    if "images" in parts:
+        idx = parts.index("images")
+        rel = Path(*parts[idx:])
         return str(rel)
     return raw_path
 
@@ -570,7 +581,7 @@ def _split_categories(raw: Optional[str]) -> list[str]:
 def _collect_tag_pool() -> list[str]:
     tag_pool = set()
     for date_val in paper_store.list_dates():
-        for paper in paper_store.load_date(date_val):
+        for paper in paper_store.load_date(date_val, with_images=False):
             raw = paper.get("tags")
             if not raw:
                 continue
