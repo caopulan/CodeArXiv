@@ -245,3 +245,37 @@ def generate_thumbnails(
     except Exception:
         small_w, small_h = stitched.width, stitched.height
     return stitched.width, stitched.height, small_w, small_h
+
+
+def generate_thumbnails_from_pdf_bytes(
+    pdf_bytes: bytes,
+    out_png: Path,
+    out_small_png: Path,
+    *,
+    max_pages: int = DEFAULT_MAX_PAGES,
+    dpi: int = DEFAULT_DPI,
+    lowres_max_width: int = LOWRES_MAX_WIDTH,
+) -> Tuple[int, int, int, int]:
+    """
+    Render a PDF (already in memory) and create a horizontal thumbnail of the first few pages.
+
+    Writes to the provided `out_png` and `out_small_png` paths. Falls back to a placeholder on failure.
+
+    Returns: (width, height, small_width, small_height)
+    """
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    out_small_png.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        pixmaps = _render_pages_from_bytes(pdf_bytes, max_pages=max_pages, dpi=dpi)
+        stitched = _stitch_horiz(pixmaps, dpi=dpi)
+    except Exception:  # noqa: BLE001 - best-effort thumbnail generation
+        stitched = _placeholder_pixmap(width=600, height=200, text=DEFAULT_PLACEHOLDER_TEXT)
+        dpi = 72
+
+    _save_png(stitched, out_png, dpi=dpi)
+    try:
+        small_w, small_h = _save_lowres_variant_pixmap(stitched, out_small_png, max_width=lowres_max_width)
+    except Exception:
+        small_w, small_h = stitched.width, stitched.height
+    return stitched.width, stitched.height, small_w, small_h

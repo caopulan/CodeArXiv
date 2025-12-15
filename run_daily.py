@@ -8,7 +8,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -18,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from thumbnail import generate_thumbnails
+from thumbnail import generate_thumbnails, generate_thumbnails_from_pdf_bytes
 
 
 LIST_CATEGORIES = ["cs.CV", "cs.AI", "cs.CG", "cs.CL"]
@@ -206,6 +205,19 @@ def _generate_thumbnails_for_pdf(pdf_path: Path, date_str: str, arxiv_id: str) -
     return large_png, small_png
 
 
+def _generate_thumbnails_for_pdf_bytes(pdf_bytes: bytes, date_str: str, arxiv_id: str) -> Tuple[Path, Path]:
+    large_png, small_png = _thumbnail_paths(date_str, arxiv_id)
+    generate_thumbnails_from_pdf_bytes(
+        pdf_bytes,
+        large_png,
+        small_png,
+        max_pages=THUMB_PAGES,
+        dpi=THUMB_RENDER_DPI,
+        lowres_max_width=THUMB_LOWRES_MAX_WIDTH,
+    )
+    return large_png, small_png
+
+
 def _build_codex_fill_cmd(args: argparse.Namespace, *, input_path: Path) -> List[str]:
     cmd = [sys.executable, str(Path(args.codex_fill).resolve()), "--input", str(input_path)]
     if args.codex_model:
@@ -224,14 +236,12 @@ def _build_codex_fill_cmd(args: argparse.Namespace, *, input_path: Path) -> List
 def _thumbnail_worker(*, arxiv_id: str, pdf_url: str, date_str: str, pdf_cfg: FetchConfig) -> ThumbnailUpdate:
     large_png, small_png = _thumbnail_paths(date_str, arxiv_id)
     try:
-        with tempfile.TemporaryDirectory(prefix="codexiv_pdf_") as tmp:
-            pdf_path = Path(tmp) / "paper.pdf"
-            try:
-                pdf_path.write_bytes(_fetch_bytes(pdf_url, pdf_cfg))
-            except Exception:
-                # Let thumbnail generation fall back to a placeholder image.
-                pass
-            _generate_thumbnails_for_pdf(pdf_path, date_str, arxiv_id)
+        try:
+            pdf_bytes = _fetch_bytes(pdf_url, pdf_cfg)
+        except Exception:
+            # Let thumbnail generation fall back to a placeholder image.
+            pdf_bytes = b""
+        _generate_thumbnails_for_pdf_bytes(pdf_bytes, date_str, arxiv_id)
         return ThumbnailUpdate(arxiv_id=arxiv_id, ok=True, large_png=large_png, small_png=small_png)
     except Exception as e:  # noqa: BLE001
         return ThumbnailUpdate(arxiv_id=arxiv_id, ok=False, large_png=large_png, small_png=small_png, error=str(e))
