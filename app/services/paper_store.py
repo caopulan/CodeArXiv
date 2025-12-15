@@ -2,11 +2,15 @@
 Lightweight JSON-backed paper storage.
 
 Files live in PAPERS_DATA_DIR with names like YYYY-MM-DD.json. Each file contains
-an array of paper dicts.
+either:
+
+- a JSON array of paper dicts, or
+- a JSON object mapping paper_id -> paper_dict (the format produced by `run_daily.py`).
 """
 
 import datetime as dt
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
@@ -51,7 +55,23 @@ def _load_raw(path: Path) -> List[Dict[str, Any]]:
         with path.open("r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, list):
-            return data
+            return [item for item in data if isinstance(item, dict)]
+        if isinstance(data, dict):
+            # Common wrappers like {"papers": [...]}.
+            papers = data.get("papers")
+            if isinstance(papers, list):
+                return [item for item in papers if isinstance(item, dict)]
+
+            # run_daily.py format: {"2512.12345": {...}, ...}
+            if data and all(isinstance(v, dict) for v in data.values()):
+                items: List[Dict[str, Any]] = []
+                for paper_id, payload in data.items():
+                    item = dict(payload)
+                    if not item.get("id") and not item.get("paper_id") and not item.get("arxiv_id"):
+                        item["id"] = str(paper_id)
+                    item.setdefault("arxiv_id", str(paper_id))
+                    items.append(item)
+                return items
     except Exception:
         return []
     return []
@@ -74,7 +94,36 @@ def _parse_embedding(raw: Any):
 
 def _normalize_paper(raw: Dict[str, Any]) -> Dict[str, Any]:
     paper = dict(raw)
-    paper["id"] = str(paper.get("id") or paper.get("paper_id") or "").strip()
+    pid = (
+        paper.get("id")
+        or paper.get("paper_id")
+        or paper.get("arxiv_id")
+        or paper.get("arxiv_id_versioned")
+        or ""
+    )
+    pid = str(pid).strip()
+    pid = re.sub(r"v\d+$", "", pid)
+    paper["id"] = pid
+    if pid and not paper.get("arxiv_id"):
+        paper["arxiv_id"] = pid
+
+    if not paper.get("comment") and paper.get("comments"):
+        paper["comment"] = paper.get("comments")
+    if not paper.get("pub_date") and paper.get("published"):
+        paper["pub_date"] = paper.get("published")
+    if not paper.get("category"):
+        derived_category = paper.get("list_category") or paper.get("primary_category")
+        list_categories = paper.get("list_categories")
+        if isinstance(list_categories, list) and list_categories:
+            derived_category = ", ".join(str(c).strip() for c in list_categories if str(c).strip()) or derived_category
+        paper["category"] = str(derived_category or "").strip()
+    if not paper.get("image_path"):
+        paper["image_path"] = (
+            paper.get("thumbnail_300_path")
+            or paper.get("thumbnail_path")
+            or paper.get("thumbnail_small_path")
+            or paper.get("thumbnail_100_path")
+        )
     # Normalize tags
     tags_raw = paper.get("tags")
     if isinstance(tags_raw, str):
