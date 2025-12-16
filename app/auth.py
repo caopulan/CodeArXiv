@@ -11,6 +11,7 @@ from flask import (
     session,
     url_for,
 )
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from .db import get_db
 
@@ -33,15 +34,16 @@ def _ensure_default_user():
     password = current_app.config.get("DEFAULT_USER_PASSWORD", "")
     user = (
         db_conn.execute(
-            "SELECT id, username, language_preference FROM Users WHERE username = ?",
+            "SELECT id, username, password, language_preference FROM Users WHERE username = ?",
             (username,),
         )
         .fetchone()
     )
     if user is None:
+        password_hash = generate_password_hash(password)
         db_conn.execute(
             "INSERT OR IGNORE INTO Users (username, password, language_preference) VALUES (?, ?, ?)",
-            (username, password, "en"),
+            (username, password_hash, "en"),
         )
         db_conn.commit()
         user = (
@@ -51,7 +53,17 @@ def _ensure_default_user():
             )
             .fetchone()
         )
-    return _normalize_user_row(user)
+        return _normalize_user_row(user)
+
+    user_data = _normalize_user_row(user)
+    stored_password = user_data.pop("password", "")
+    if stored_password and "$" not in stored_password:
+        db_conn.execute(
+            "UPDATE Users SET password = ? WHERE id = ?",
+            (generate_password_hash(stored_password), user_data["id"]),
+        )
+        db_conn.commit()
+    return user_data
 
 
 @bp.before_app_request
@@ -113,10 +125,11 @@ def signup():
             error = "User already exists."
 
         if error is None:
+            password_hash = generate_password_hash(password)
             db_conn = get_db()
             cursor = db_conn.execute(
                 "INSERT INTO Users (username, password, language_preference) VALUES (?, ?, ?)",
-                (username, password, "en"),
+                (username, password_hash, "en"),
             )
             db_conn.commit()
             session.clear()
@@ -137,16 +150,28 @@ def login():
         password = request.form.get("password", "").strip()
         error = None
 
+        db_conn = get_db()
         user = (
-            get_db()
-            .execute(
+            db_conn.execute(
                 "SELECT id, username, password FROM Users WHERE username = ?",
                 (username,),
             )
             .fetchone()
         )
 
-        if user is None or user["password"] != password:
+        password_ok = False
+        if user is not None:
+            stored_password = user["password"] or ""
+            password_ok = check_password_hash(stored_password, password)
+            if not password_ok and "$" not in stored_password and stored_password == password:
+                password_ok = True
+                db_conn.execute(
+                    "UPDATE Users SET password = ? WHERE id = ?",
+                    (generate_password_hash(password), user["id"]),
+                )
+                db_conn.commit()
+
+        if user is None or not password_ok:
             error = "Invalid username or password."
 
         if error is None:
