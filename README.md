@@ -2,13 +2,11 @@
 
 <div align="center">
 
-[![GitHub Stars](https://img.shields.io/github/stars/caopulan/arXivDaily?style=social)](https://github.com/caopulan/arXivDaily/stargazers)
-[![GitHub Forks](https://img.shields.io/github/forks/caopulan/arXivDaily?style=social)](https://github.com/caopulan/arXivDaily/network/members)
-
-[![License](https://img.shields.io/github/license/caopulan/arXivDaily?color=blue)](https://github.com/caopulan/arXivDaily/blob/main/LICENSE)
+[![GitHub Stars](https://img.shields.io/github/stars/caopulan/CodeArXiv?style=social)](https://github.com/caopulan/CodeArXiv/stargazers)
+[![GitHub Forks](https://img.shields.io/github/forks/caopulan/CodeArXiv?style=social)](https://github.com/caopulan/CodeArXiv/network/members)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Dataset-yellow)](https://huggingface.co/datasets/caopu/CodeArXiv-data)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/caopulan/arXivDaily/pulls)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/caopulan/CodeArXiv/pulls)
 
 </div>
 
@@ -35,9 +33,10 @@ Experience research like never before. Say goodbye to dense text lists and explo
 
 We leverage state-of-the-art LLMs to summarize, tag, and translate every paper, turning raw data into actionable insights.
 
-* **⚡ AI-Powered Tl;dr:** Powered by **DeepSeek V3.2 (Thinking Mode)**, we distill complex papers into a precise one-sentence summary for rapid browsing.
+* **⚡ AI-Powered Tl;dr:** Powered by **GPT-5.2 (via OpenAI Codex CLI)**, we distill complex papers into a precise one-sentence summary for rapid browsing.
 * **🧠 Multi-dimensional Tagging:** Every paper is deeply analyzed and tagged across multiple dimensions—including `task`, `method`, `property`, and `special paper type`—to help you find exactly what you need.
-* **🌐 Chinese-Friendly & Bilingual:** Break language barriers with high-quality translations from **Qwen-MT-Plus**. Seamlessly switch between English and Chinese for titles, abstracts, and conclusions.
+* **🌐 Chinese-Friendly & Bilingual:** Break language barriers with high-quality translations from **GPT-5.2 (via OpenAI Codex CLI)**. Seamlessly switch between English and Chinese for titles, abstracts, and conclusions.
+* **🔎 Semantic Similarity:** Paper/favorite embeddings are generated with **Qwen3-Embedding** to power similarity scores and recommendations.
 
 ### 3. 🔖 Smart Collections & Filtering
 
@@ -50,7 +49,7 @@ Don't just read—curate and control your feed.
 ### 4. 🏠 Private & Local Deployment
 
 * **🔒 Full Local Control:** Deploy the web interface entirely on your local machine. Your reading history, favorites, and preferences stay private.
-* **👥 Flexible User Modes:** Supports multi-user registration and login for shared deployments. For personal use, it defaults to a frictionless "No-User Mode." (Note: Authentication currently uses a lightweight password matching mechanism.)
+* **👥 Flexible User Modes:** Supports multi-user registration and login for shared deployments. For personal use, it defaults to a frictionless "No-User Mode." (Passwords are hashed and verified.)
 * **🔄 Effortless Data Sync:** We process and update ArXiv metadata and AI insights daily on the [CodeArXiv-data](https://huggingface.co/datasets/caopu/CodeArXiv-data) HuggingFace repository. Your local instance can automatically sync with our dataset using a single command/script.
 
 
@@ -65,7 +64,7 @@ Get up and running in minutes.
 #### 1.  **Clone the repository**
 
     ```
-    git clone https://github.com/yourusername/CodeArXiv.git
+    git clone https://github.com/caopulan/CodeArXiv.git
     cd CodeArXiv
     ```
 
@@ -96,7 +95,7 @@ uv sync -p 3.12 --extra hf
 a) Download all data without images
 ```
 uv run hf download caopu/CodeArXiv-data \
-    --include "*.json"\
+    --include "*.json" \
     --repo-type dataset \
     --local-dir ./CodeArXiv-data
 ```
@@ -105,7 +104,7 @@ b) Download specific date data without images
 
 ```
 uv run hf download caopu/CodeArXiv-data \
-    --include "2025-12-04.json"\
+    --include "2025-12-04.json" \
     --repo-type dataset \
     --local-dir ./CodeArXiv-data
 ```
@@ -117,7 +116,7 @@ c) Download specific date data with images
 Change `--include` to:
 
 ```
---include "2025-12-04.json" "images/2025-12-04/*
+--include "2025-12-04.json" "images/2025-12-04/*"
 ```
 
 d) Download all data
