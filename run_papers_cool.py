@@ -221,6 +221,35 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="Forwarded to codex_fill_zh.py --overwrite.",
     )
+    parser.add_argument(
+        "--skip-embedding",
+        action="store_true",
+        help="Skip generating DashScope embeddings into the results JSON.",
+    )
+    parser.add_argument(
+        "--embedding-batch-size",
+        type=int,
+        default=daily.DEFAULT_EMBEDDING_BATCH_SIZE,
+        help=f"DashScope embedding batch size (default: {daily.DEFAULT_EMBEDDING_BATCH_SIZE}).",
+    )
+    parser.add_argument(
+        "--embedding-timeout",
+        type=int,
+        default=daily.DEFAULT_EMBEDDING_TIMEOUT_S,
+        help=f"DashScope embedding request timeout seconds (default: {daily.DEFAULT_EMBEDDING_TIMEOUT_S}).",
+    )
+    parser.add_argument(
+        "--embedding-sleep",
+        type=float,
+        default=0.0,
+        help="Sleep seconds between embedding batches (default: 0).",
+    )
+    parser.add_argument(
+        "--embedding-max-chars",
+        type=int,
+        default=daily.DEFAULT_EMBEDDING_MAX_CHARS,
+        help=f"Max chars per embedding input text (default: {daily.DEFAULT_EMBEDDING_MAX_CHARS}).",
+    )
 
     args = parser.parse_args(argv)
 
@@ -234,6 +263,20 @@ def main(argv: Optional[List[str]] = None) -> int:
         raise SystemExit("No categories specified (use --categories).")
 
     cfg = daily.FetchConfig()
+    embed_config = None
+    if not args.skip_embedding:
+        embed_config = daily._load_embedding_config_from_env(
+            batch_size=args.embedding_batch_size,
+            timeout_s=args.embedding_timeout,
+            sleep_s=args.embedding_sleep,
+            max_chars=args.embedding_max_chars,
+        )
+        if embed_config is None:
+            print(
+                "[Step5] embeddings skipped (missing EMBEDDING_MODEL/EMBEDDING_API_KEY).",
+                file=sys.stderr,
+                flush=True,
+            )
     show_size = max(1, int(args.show_size))
     max_pages = max(1, int(args.max_pages))
 
@@ -297,10 +340,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             "translated": False,
             "summary_generated": False,
             "thumbnails_generated": False,
+            "embedding": None,
             "errors": {},
         }
         entry = results.setdefault(arxiv_id, defaults)
         _merge_list_fields(entry, list_date=date_str, categories=cats_now, show_size=show_size)
+        entry.setdefault("embedding", None)
         _fill_missing_from_papers_cool(entry, cool_map.get(arxiv_id) or {})
 
     daily._json_dump_atomic(results, results_path)
@@ -312,6 +357,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         meta_map = daily._fetch_arxiv_metadata(chunk, cfg)
         for arxiv_id in chunk:
             entry = results.setdefault(arxiv_id, {"arxiv_id": arxiv_id})
+            entry.setdefault("embedding", None)
             entry["updated_at"] = daily._now_iso()
             try:
                 meta = meta_map[arxiv_id]
@@ -376,6 +422,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     else:
         print(f"[Step3] {date_str}: thumbnails start (nothing to generate)", flush=True)
 
+    embedding_updates: Dict[str, daily.EmbeddingUpdate] = {}
     completed = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
         fut_to_id = {
@@ -388,6 +435,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             ): arxiv_id
             for arxiv_id, pdf_url in to_generate
         }
+        embedding_updates = daily._compute_embedding_updates(
+            date_str=date_str,
+            ids=ids,
+            results=results,
+            cfg=cfg,
+            embed_config=embed_config,
+        )
         for fut in concurrent.futures.as_completed(fut_to_id):
             arxiv_id = fut_to_id[fut]
             try:
@@ -415,16 +469,37 @@ def main(argv: Optional[List[str]] = None) -> int:
         raise RuntimeError(f"Unexpected results format in {results_path} (expected dict).")
     results_latest: Dict[str, Dict[str, Any]] = loaded
 
-    changed_total = 0
+    thumb_changed = 0
     for arxiv_id, upd in thumb_updates.items():
         entry = results_latest.get(arxiv_id) or {"arxiv_id": arxiv_id}
         if daily._apply_thumbnail_update(entry, upd):
-            changed_total += 1
+            thumb_changed += 1
         results_latest[arxiv_id] = entry
 
+    embed_changed = 0
+    for arxiv_id, upd in embedding_updates.items():
+        entry = results_latest.get(arxiv_id) or {"arxiv_id": arxiv_id}
+        if upd.ok and daily._has_valid_embedding(entry.get("embedding")):
+            continue
+        if not upd.ok and daily._has_valid_embedding(entry.get("embedding")):
+            continue
+        if daily._apply_embedding_update(entry, upd):
+            embed_changed += 1
+        results_latest[arxiv_id] = entry
+
+    changed_total = thumb_changed + embed_changed
     if changed_total:
         daily._json_dump_atomic(results_latest, results_path)
-        print(f"[Step3] {date_str}: thumbnails saved (updated {changed_total}) -> {results_path}", flush=True)
+        if thumb_changed:
+            print(
+                f"[Step3] {date_str}: thumbnails saved (updated {thumb_changed}) -> {results_path}",
+                flush=True,
+            )
+        if embed_changed:
+            print(
+                f"[Step5] {date_str}: embeddings saved (updated {embed_changed}) -> {results_path}",
+                flush=True,
+            )
 
     return codex_rc
 

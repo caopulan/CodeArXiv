@@ -152,21 +152,6 @@ def _load_raw(path: Path) -> List[Dict[str, Any]]:
     return []
 
 
-def _parse_embedding(raw: Any):
-    if raw is None:
-        return None
-    if isinstance(raw, (list, tuple)):
-        return list(raw)
-    if isinstance(raw, str):
-        try:
-            parsed = json.loads(raw)
-            if isinstance(parsed, (list, tuple)):
-                return list(parsed)
-        except Exception:
-            return raw
-    return raw
-
-
 def _normalize_paper(raw: Dict[str, Any]) -> Dict[str, Any]:
     paper = dict(raw)
     pid = (
@@ -215,7 +200,10 @@ def _normalize_paper(raw: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(tags_raw, list):
         tags_raw = [tags_raw]
     paper["tags"] = [str(t).strip() for t in tags_raw if str(t).strip()]
-    paper["embedding"] = _parse_embedding(paper.get("embedding"))
+    embedding = paper.get("embedding")
+    if isinstance(embedding, tuple):
+        embedding = list(embedding)
+    paper["embedding"] = embedding
     if paper.get("pub_date"):
         paper["pub_date"] = str(paper["pub_date"])
     if paper.get("created_at"):
