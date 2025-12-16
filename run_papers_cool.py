@@ -242,6 +242,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         help=f"Thumbnail generation concurrency (default: {daily.DEFAULT_THUMB_WORKERS}).",
     )
     parser.add_argument(
+        "--thumb-overwrite",
+        action="store_true",
+        help="Regenerate thumbnails even if image files already exist.",
+    )
+    parser.add_argument(
         "--skip-codex",
         action="store_true",
         help="Skip running codex_fill_zh.py after metadata is fetched.",
@@ -467,7 +472,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         entry = results.get(arxiv_id) or {}
         pdf_url = (entry.get("pdf_url") or f"https://arxiv.org/pdf/{arxiv_id}.pdf").strip()
         large_png, small_png = daily._thumbnail_paths(date_str, arxiv_id)
-        if large_png.exists() and small_png.exists():
+        up_to_date = (
+            entry.get("thumbnails_generated") is True
+            and entry.get("thumbnail_version") == daily.THUMBNAIL_VERSION
+        )
+        if not args.thumb_overwrite and up_to_date and large_png.exists() and small_png.exists():
             thumb_updates[arxiv_id] = daily.ThumbnailUpdate(
                 arxiv_id=arxiv_id, ok=True, large_png=large_png, small_png=small_png
             )
@@ -493,6 +502,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 pdf_url=pdf_url,
                 date_str=date_str,
                 pdf_cfg=pdf_cfg,
+                overwrite=args.thumb_overwrite,
             ): arxiv_id
             for arxiv_id, pdf_url in to_generate
         }

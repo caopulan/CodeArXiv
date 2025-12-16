@@ -14,6 +14,7 @@ LOWRES_MAX_WIDTH = 1200
 DEFAULT_TIMEOUT_S = 30
 DEFAULT_USER_AGENT = "CodeArXivBot/0.1 (+https://arxiv.org)"
 DEFAULT_PLACEHOLDER_TEXT = "Thumbnail unavailable"
+PDF_MAGIC = b"%PDF-"
 
 
 def _safe_stem(value: str) -> str:
@@ -35,6 +36,13 @@ def _download_pdf(pdf_url: str, *, timeout_s: int = DEFAULT_TIMEOUT_S, user_agen
     )
     with urllib.request.urlopen(req, timeout=timeout_s) as resp:
         return resp.read()
+
+
+def _looks_like_pdf(pdf_bytes: bytes) -> bool:
+    if not pdf_bytes:
+        return False
+    head = pdf_bytes[:1024].lstrip()
+    return head.startswith(PDF_MAGIC)
 
 
 def _ensure_rgb_no_alpha(pix: fitz.Pixmap) -> fitz.Pixmap:
@@ -68,6 +76,8 @@ def _render_pages_from_path(
 def _render_pages_from_bytes(
     pdf_bytes: bytes, *, max_pages: int = DEFAULT_MAX_PAGES, dpi: int = DEFAULT_DPI
 ) -> List[fitz.Pixmap]:
+    if not _looks_like_pdf(pdf_bytes):
+        raise ValueError("Expected PDF bytes, got non-PDF content.")
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
         return _render_pages_doc(doc, max_pages=max_pages, dpi=dpi)

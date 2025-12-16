@@ -32,7 +32,7 @@ IMAGES_DIR = RESULTS_DIR / "images"
 THUMB_PAGES = 5
 THUMB_RENDER_DPI = 300
 THUMB_LOWRES_MAX_WIDTH = 1200
-THUMBNAIL_VERSION = 2
+THUMBNAIL_VERSION = 3
 DEFAULT_THUMB_WORKERS = 10
 
 
@@ -162,6 +162,13 @@ def _env_bool(name: str, default: bool) -> bool:
 def _env_str(name: str) -> Optional[str]:
     raw = (os.getenv(name) or "").strip()
     return raw or None
+
+
+def _looks_like_pdf(pdf_bytes: bytes) -> bool:
+    if not pdf_bytes:
+        return False
+    head = pdf_bytes[:1024].lstrip()
+    return head.startswith(b"%PDF-")
 
 
 def _load_embedding_config_from_env(
@@ -409,6 +416,38 @@ def _fetch_bytes(url: str, cfg: FetchConfig, data: Optional[bytes] = None) -> by
     raise last_err
 
 
+def _fetch_pdf_bytes(url: str, cfg: FetchConfig) -> bytes:
+    """
+    Fetch a PDF and reject HTML/error pages that some endpoints return with HTTP 200.
+    """
+    last_err: Optional[Exception] = None
+    for attempt in range(cfg.retries):
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": cfg.user_agent,
+                    "Accept": "application/pdf",
+                    "Accept-Encoding": "identity",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=cfg.timeout_s) as resp:
+                raw = resp.read()
+                content_type = (resp.headers.get("Content-Type") or "").strip()
+            if _looks_like_pdf(raw):
+                return raw
+            head = raw[:160].replace(b"\n", b" ")  # avoid multi-line noise
+            raise RuntimeError(
+                f"Non-PDF response (Content-Type={content_type!r}, head={head!r})"
+            )
+        except Exception as e:  # noqa: BLE001 - capture & retry network failures
+            last_err = e
+            sleep_s = cfg.backoff_s * (attempt + 1)
+            time.sleep(sleep_s)
+    assert last_err is not None
+    raise last_err
+
+
 def _fetch_text(url: str, cfg: FetchConfig) -> str:
     return _fetch_bytes(url, cfg).decode("utf-8", "replace")
 
@@ -556,17 +595,26 @@ def _build_codex_fill_cmd(args: argparse.Namespace, *, input_path: Path) -> List
     return cmd
 
 
-def _thumbnail_worker(*, arxiv_id: str, pdf_url: str, date_str: str, pdf_cfg: FetchConfig) -> ThumbnailUpdate:
+def _thumbnail_worker(
+    *,
+    arxiv_id: str,
+    pdf_url: str,
+    date_str: str,
+    pdf_cfg: FetchConfig,
+    overwrite: bool = False,
+) -> ThumbnailUpdate:
     large_png, small_png = _thumbnail_paths(date_str, arxiv_id)
+    had_existing = large_png.exists() and small_png.exists()
     try:
-        try:
-            pdf_bytes = _fetch_bytes(pdf_url, pdf_cfg)
-        except Exception:
-            # Let thumbnail generation fall back to a placeholder image.
-            pdf_bytes = b""
+        pdf_bytes = _fetch_pdf_bytes(pdf_url, pdf_cfg)
         _generate_thumbnails_for_pdf_bytes(pdf_bytes, date_str, arxiv_id)
         return ThumbnailUpdate(arxiv_id=arxiv_id, ok=True, large_png=large_png, small_png=small_png)
     except Exception as e:  # noqa: BLE001
+        if overwrite or not had_existing:
+            try:
+                _generate_thumbnails_for_pdf_bytes(b"", date_str, arxiv_id)
+            except Exception:
+                pass
         return ThumbnailUpdate(arxiv_id=arxiv_id, ok=False, large_png=large_png, small_png=small_png, error=str(e))
 
 
@@ -637,6 +685,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         type=int,
         default=DEFAULT_THUMB_WORKERS,
         help=f"Thumbnail generation concurrency (default: {DEFAULT_THUMB_WORKERS}).",
+    )
+    parser.add_argument(
+        "--thumb-overwrite",
+        action="store_true",
+        help="Regenerate thumbnails even if image files already exist.",
     )
     parser.add_argument(
         "--skip-codex",
@@ -844,7 +897,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             entry = results.get(arxiv_id) or {}
             pdf_url = (entry.get("pdf_url") or f"https://arxiv.org/pdf/{arxiv_id}.pdf").strip()
             large_png, small_png = _thumbnail_paths(date_str, arxiv_id)
-            if large_png.exists() and small_png.exists():
+            up_to_date = (
+                entry.get("thumbnails_generated") is True
+                and entry.get("thumbnail_version") == THUMBNAIL_VERSION
+            )
+            if not args.thumb_overwrite and up_to_date and large_png.exists() and small_png.exists():
                 thumb_updates[arxiv_id] = ThumbnailUpdate(
                     arxiv_id=arxiv_id, ok=True, large_png=large_png, small_png=small_png
                 )
@@ -870,6 +927,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     pdf_url=pdf_url,
                     date_str=date_str,
                     pdf_cfg=pdf_cfg,
+                    overwrite=args.thumb_overwrite,
                 ): arxiv_id
                 for arxiv_id, pdf_url in to_generate
             }
