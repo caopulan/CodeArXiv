@@ -99,7 +99,8 @@ def _resolve_dashscope_embedding_endpoint(base_url: str) -> str:
     Accepts either:
     - full endpoint URL (already contains /services/embeddings/...), or
     - a base host (https://dashscope.aliyuncs.com), or
-    - an api root (https://dashscope.aliyuncs.com/api/v1).
+    - an api root (https://dashscope.aliyuncs.com/api/v1), or
+    - DashScope OpenAI-compatible base (https://dashscope.aliyuncs.com/compatible-mode/v1).
     """
     raw = (base_url or "").strip()
     if not raw:
@@ -112,10 +113,20 @@ def _resolve_dashscope_embedding_endpoint(base_url: str) -> str:
 
     path = parsed.path or ""
     if "/services/embeddings/" in path:
-        return raw
+        return raw.rstrip("/")
 
     cleaned = raw.rstrip("/")
-    if path.rstrip("/") == "/api/v1":
+    path_clean = path.rstrip("/")
+
+    compat_suffix = "/compatible-mode/v1"
+    if path_clean.endswith(compat_suffix):
+        prefix_path = path_clean[: -len(compat_suffix)]
+        base = (
+            urllib.parse.urlunparse(parsed._replace(path=prefix_path, params="", query="", fragment="")).rstrip("/")
+        )
+        return f"{base}{DASHSCOPE_EMBEDDING_PATH}"
+
+    if path_clean == "/api/v1":
         return f"{cleaned}/services/embeddings/text-embedding/text-embedding"
 
     return f"{cleaned}{DASHSCOPE_EMBEDDING_PATH}"
@@ -164,6 +175,10 @@ def _load_embedding_config_from_env(
     model = (os.getenv("EMBEDDING_MODEL") or "").strip()
     api_key = (os.getenv("EMBEDDING_API_KEY") or "").strip()
     base_url = (os.getenv("EMBEDDING_BASE_URL") or "").strip()
+    if api_key:
+        api_key = os.path.expandvars(api_key).strip()
+    if base_url:
+        base_url = os.path.expandvars(base_url).strip()
     if not model or not api_key:
         return None
     endpoint = _resolve_dashscope_embedding_endpoint(base_url)
@@ -268,7 +283,7 @@ def _dashscope_embed_texts(texts: List[str], *, config: EmbeddingConfig, cfg: Fe
                 err_body = e.read().decode("utf-8", "replace").strip()
             except Exception:
                 err_body = ""
-            last_err = RuntimeError(f"DashScope HTTP {e.code}: {err_body or e.reason}")
+            last_err = RuntimeError(f"DashScope HTTP {e.code} for {config.endpoint}: {err_body or e.reason}")
             if 400 <= e.code < 500 and e.code not in (408, 429):
                 break
         except Exception as e:  # noqa: BLE001 - best-effort retries
