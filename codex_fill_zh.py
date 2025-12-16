@@ -11,6 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+from dotenv import load_dotenv
+
 
 RESULTS_DIR = Path("results")
 
@@ -62,11 +64,73 @@ def _extract_json_object(text: str) -> Dict[str, Any]:
     return obj
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
+
+
+def _env_str(name: str) -> Optional[str]:
+    raw = (os.getenv(name) or "").strip()
+    return raw or None
+
+
+def _build_codex_exec_cmd(
+    *,
+    model: Optional[str],
+    reasoning_effort: str,
+    reasoning_summary: str,
+    tmp_path: Path,
+) -> list[str]:
+    cmd = [
+        "codex",
+        "exec",
+        "--skip-git-repo-check",
+        "--disable",
+        "shell_tool",
+        "--color",
+        "never",
+        "-c",
+        f'model_reasoning_effort="{reasoning_effort}"',
+        "-c",
+        f'model_reasoning_summary="{reasoning_summary}"',
+        "--output-last-message",
+        str(tmp_path),
+    ]
+    if model:
+        cmd.extend(["-m", model])
+    cmd.append("-")
+    return cmd
+
+
 def _codex_translate_and_summarize(
     *,
     title_en: str,
     abstract_en: str,
     model: Optional[str],
+    reasoning_effort: str,
+    reasoning_summary: str,
     timeout_s: int,
 ) -> Tuple[str, str, str, str]:
     prompt = (
@@ -87,24 +151,12 @@ def _codex_translate_and_summarize(
 
     tmp_path = Path(f".codex_last_message.{os.getpid()}.txt")
     try:
-        cmd = [
-            "codex",
-            "exec",
-            "--skip-git-repo-check",
-            "--disable",
-            "shell_tool",
-            "--color",
-            "never",
-            "-c",
-            "model_reasoning_effort=\"low\"",
-            "-c",
-            "model_reasoning_summary=\"concise\"",
-            "--output-last-message",
-            str(tmp_path),
-        ]
-        if model:
-            cmd.extend(["-m", model])
-        cmd.append("-")
+        cmd = _build_codex_exec_cmd(
+            model=model,
+            reasoning_effort=reasoning_effort,
+            reasoning_summary=reasoning_summary,
+            tmp_path=tmp_path,
+        )
 
         subprocess.run(
             cmd,
@@ -136,6 +188,8 @@ def _codex_translate_and_summarize_batch(
     *,
     items: Dict[str, Dict[str, str]],
     model: Optional[str],
+    reasoning_effort: str,
+    reasoning_summary: str,
     timeout_s: int,
 ) -> Dict[str, Dict[str, str]]:
     """
@@ -170,24 +224,12 @@ def _codex_translate_and_summarize_batch(
 
     tmp_path = Path(f".codex_last_message.{os.getpid()}.txt")
     try:
-        cmd = [
-            "codex",
-            "exec",
-            "--skip-git-repo-check",
-            "--disable",
-            "shell_tool",
-            "--color",
-            "never",
-            "-c",
-            "model_reasoning_effort=\"low\"",
-            "-c",
-            "model_reasoning_summary=\"concise\"",
-            "--output-last-message",
-            str(tmp_path),
-        ]
-        if model:
-            cmd.extend(["-m", model])
-        cmd.append("-")
+        cmd = _build_codex_exec_cmd(
+            model=model,
+            reasoning_effort=reasoning_effort,
+            reasoning_summary=reasoning_summary,
+            tmp_path=tmp_path,
+        )
 
         subprocess.run(
             cmd,
@@ -226,6 +268,15 @@ def _codex_translate_and_summarize_batch(
 
 
 def main() -> int:
+    load_dotenv()
+    default_model = _env_str("CODEX_MODEL")
+    default_batch_size = max(1, _env_int("CODEX_BATCH_SIZE", 5))
+    default_timeout = max(1, _env_int("CODEX_TIMEOUT", 300))
+    default_sleep = max(0.0, _env_float("CODEX_SLEEP", 0.2))
+    default_overwrite = _env_bool("CODEX_OVERWRITE", False)
+    default_reasoning_effort = (os.getenv("CODEX_REASONING_EFFORT") or "").strip() or "low"
+    default_reasoning_summary = (os.getenv("CODEX_REASONING_SUMMARY") or "").strip() or "concise"
+
     parser = argparse.ArgumentParser(
         description="Fill title_zh/abstract_zh/summary_zh/summary_en in results JSON via Codex (LLM)."
     )
@@ -237,7 +288,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--overwrite",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=default_overwrite,
         help="Overwrite existing translated/summary fields even if present.",
     )
     parser.add_argument(
@@ -249,25 +301,37 @@ def main() -> int:
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=5,
+        default=default_batch_size,
         help="Batch size per Codex request (1 = per-paper).",
     )
     parser.add_argument(
         "--model",
         type=str,
-        default=None,
+        default=default_model,
         help="Codex model name (default: Codex CLI default).",
+    )
+    parser.add_argument(
+        "--reasoning-effort",
+        type=str,
+        default=default_reasoning_effort,
+        help="Codex reasoning effort (default: CODEX_REASONING_EFFORT or low).",
+    )
+    parser.add_argument(
+        "--reasoning-summary",
+        type=str,
+        default=default_reasoning_summary,
+        help="Codex reasoning summary (default: CODEX_REASONING_SUMMARY or concise).",
     )
     parser.add_argument(
         "--sleep",
         type=float,
-        default=0.2,
+        default=default_sleep,
         help="Sleep seconds between papers to avoid rate limits.",
     )
     parser.add_argument(
         "--timeout",
         type=int,
-        default=300,
+        default=default_timeout,
         help="Timeout seconds per Codex request.",
     )
     args = parser.parse_args()
@@ -312,6 +376,8 @@ def main() -> int:
                 out_map = _codex_translate_and_summarize_batch(
                     items=items,
                     model=args.model,
+                    reasoning_effort=str(args.reasoning_effort),
+                    reasoning_summary=str(args.reasoning_summary),
                     timeout_s=args.timeout,
                 )
                 for arxiv_id in items.keys():

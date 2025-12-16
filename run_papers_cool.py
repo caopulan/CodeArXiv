@@ -5,6 +5,7 @@ import argparse
 import concurrent.futures
 import html
 import json
+import os
 import re
 import subprocess
 import sys
@@ -13,6 +14,8 @@ import urllib.parse
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from dotenv import load_dotenv
 
 import run_daily as daily
 
@@ -31,6 +34,38 @@ DATE_RE = re.compile(
     flags=re.IGNORECASE | re.DOTALL,
 )
 AUTHOR_RE = re.compile(r'class="author\b[^"]*"[^>]*>(.*?)</a>', flags=re.IGNORECASE | re.DOTALL)
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
+
+
+def _env_str(name: str) -> Optional[str]:
+    raw = (os.getenv(name) or "").strip()
+    return raw or None
 
 
 def _papers_cool_url(category: str, *, list_date: str, skip: int, show: int) -> str:
@@ -168,6 +203,13 @@ def _fill_missing_from_papers_cool(entry: Dict[str, Any], cool: Dict[str, Any]) 
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    load_dotenv()
+    default_codex_model = _env_str("CODEX_MODEL")
+    default_codex_batch_size = max(1, _env_int("CODEX_BATCH_SIZE", 5))
+    default_codex_timeout = max(1, _env_int("CODEX_TIMEOUT", 300))
+    default_codex_sleep = max(0.0, _env_float("CODEX_SLEEP", 0.2))
+    default_codex_overwrite = _env_bool("CODEX_OVERWRITE", False)
+
     parser = argparse.ArgumentParser(
         description=(
             "Fetch a specified list date from papers.cool, then reuse run_daily.py's arXiv metadata fetch, "
@@ -210,15 +252,34 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=Path(__file__).resolve().parent / "codex_fill_zh.py",
         help="Path to codex_fill_zh.py (used after metadata is fetched).",
     )
-    parser.add_argument("--codex-model", type=str, default=None, help="Forwarded to codex_fill_zh.py --model.")
     parser.add_argument(
-        "--codex-batch-size", type=int, default=5, help="Forwarded to codex_fill_zh.py --batch-size."
+        "--codex-model",
+        type=str,
+        default=default_codex_model,
+        help="Forwarded to codex_fill_zh.py --model (default: CODEX_MODEL).",
     )
-    parser.add_argument("--codex-timeout", type=int, default=300, help="Forwarded to codex_fill_zh.py --timeout.")
-    parser.add_argument("--codex-sleep", type=float, default=0.2, help="Forwarded to codex_fill_zh.py --sleep.")
+    parser.add_argument(
+        "--codex-batch-size",
+        type=int,
+        default=default_codex_batch_size,
+        help="Forwarded to codex_fill_zh.py --batch-size (default: CODEX_BATCH_SIZE).",
+    )
+    parser.add_argument(
+        "--codex-timeout",
+        type=int,
+        default=default_codex_timeout,
+        help="Forwarded to codex_fill_zh.py --timeout (default: CODEX_TIMEOUT).",
+    )
+    parser.add_argument(
+        "--codex-sleep",
+        type=float,
+        default=default_codex_sleep,
+        help="Forwarded to codex_fill_zh.py --sleep (default: CODEX_SLEEP).",
+    )
     parser.add_argument(
         "--codex-overwrite",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=default_codex_overwrite,
         help="Forwarded to codex_fill_zh.py --overwrite.",
     )
     parser.add_argument(
