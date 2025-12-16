@@ -32,17 +32,33 @@
         {% if g.user %}
         <form class="d-flex align-items-center gap-2 nav-date-form my-2 my-lg-0" method="get" action="{{ url_for('feed.index') }}">
           <label class="nav-date-label text-muted small d-none d-lg-inline" for="navDate">{{ lang_copy.nav_date_label }}</label>
-          <input
-            id="navDate"
-            class="form-control form-control-sm nav-date-input"
-            type="date"
-            name="date"
-            value="{{ nav_selected_date or '' }}"
-            {% if nav_min_date %}min="{{ nav_min_date }}"{% endif %}
-            {% if nav_max_date %}max="{{ nav_max_date }}"{% endif %}
-            aria-label="{{ lang_copy.nav_date_aria }}"
-            onchange="this.form.submit()"
-          >
+          {% set date_options = nav_dates|default([]) %}
+          {% if date_options %}
+            <select
+              id="navDate"
+              class="form-select form-select-sm nav-date-input"
+              name="date"
+              aria-label="{{ lang_copy.nav_date_aria }}"
+              onchange="this.form.submit()"
+            >
+              {% set selected_date = nav_selected_date|default('') %}
+              {% for date_value in date_options %}
+                <option value="{{ date_value }}" {% if date_value == selected_date %}selected{% endif %}>{{ date_value }}</option>
+              {% endfor %}
+            </select>
+          {% else %}
+            <input
+              id="navDate"
+              class="form-control form-control-sm nav-date-input"
+              type="date"
+              name="date"
+              value="{{ nav_selected_date|default('') }}"
+              {% if nav_min_date %}min="{{ nav_min_date }}"{% endif %}
+              {% if nav_max_date %}max="{{ nav_max_date }}"{% endif %}
+              aria-label="{{ lang_copy.nav_date_aria }}"
+              onchange="this.form.submit()"
+            >
+          {% endif %}
         </form>
         {% endif %}
         <ul class="navbar-nav ms-auto">
