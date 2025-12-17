@@ -420,30 +420,73 @@ def _fetch_pdf_bytes(url: str, cfg: FetchConfig) -> bytes:
     """
     Fetch a PDF and reject HTML/error pages that some endpoints return with HTTP 200.
     """
+    def _candidate_urls(raw_url: str) -> List[str]:
+        cleaned = str(raw_url or "").strip()
+        if not cleaned:
+            return []
+
+        parsed = urllib.parse.urlparse(cleaned)
+        candidates = [cleaned]
+
+        # Common mistake: abs page instead of PDF.
+        if "/abs/" in parsed.path:
+            pdf_path = parsed.path.replace("/abs/", "/pdf/", 1)
+            if not pdf_path.endswith(".pdf"):
+                pdf_path = f"{pdf_path}.pdf"
+            candidates.append(parsed._replace(path=pdf_path).geturl())
+
+        # Prefer https.
+        if parsed.scheme == "http":
+            candidates.append(parsed._replace(scheme="https").geturl())
+
+        # arxiv.org sometimes serves HTML blocks; export.arxiv.org is often more reliable.
+        netloc = (parsed.netloc or "").lower()
+        if netloc in ("arxiv.org", "www.arxiv.org"):
+            candidates.append(parsed._replace(netloc="export.arxiv.org").geturl())
+
+        out: List[str] = []
+        seen: set[str] = set()
+        for c in candidates:
+            if c not in seen:
+                seen.add(c)
+                out.append(c)
+        return out
+
+    def _fetch_one(candidate_url: str) -> bytes:
+        last_err: Optional[Exception] = None
+        for attempt in range(cfg.retries):
+            try:
+                req = urllib.request.Request(
+                    candidate_url,
+                    headers={
+                        "User-Agent": cfg.user_agent,
+                        "Accept": "application/pdf",
+                        "Accept-Encoding": "identity",
+                    },
+                )
+                with urllib.request.urlopen(req, timeout=cfg.timeout_s) as resp:
+                    raw = resp.read()
+                    content_type = (resp.headers.get("Content-Type") or "").strip()
+                if _looks_like_pdf(raw):
+                    return raw
+                head = raw[:160].replace(b"\n", b" ")  # avoid multi-line noise
+                raise RuntimeError(
+                    f"Non-PDF response (Content-Type={content_type!r}, head={head!r})"
+                )
+            except Exception as e:  # noqa: BLE001 - capture & retry network failures
+                last_err = e
+                sleep_s = cfg.backoff_s * (attempt + 1)
+                time.sleep(sleep_s)
+        assert last_err is not None
+        raise last_err
+
     last_err: Optional[Exception] = None
-    for attempt in range(cfg.retries):
+    for candidate in _candidate_urls(url):
         try:
-            req = urllib.request.Request(
-                url,
-                headers={
-                    "User-Agent": cfg.user_agent,
-                    "Accept": "application/pdf",
-                    "Accept-Encoding": "identity",
-                },
-            )
-            with urllib.request.urlopen(req, timeout=cfg.timeout_s) as resp:
-                raw = resp.read()
-                content_type = (resp.headers.get("Content-Type") or "").strip()
-            if _looks_like_pdf(raw):
-                return raw
-            head = raw[:160].replace(b"\n", b" ")  # avoid multi-line noise
-            raise RuntimeError(
-                f"Non-PDF response (Content-Type={content_type!r}, head={head!r})"
-            )
-        except Exception as e:  # noqa: BLE001 - capture & retry network failures
+            return _fetch_one(candidate)
+        except Exception as e:  # noqa: BLE001 - try fallbacks
             last_err = e
-            sleep_s = cfg.backoff_s * (attempt + 1)
-            time.sleep(sleep_s)
+            continue
     assert last_err is not None
     raise last_err
 
@@ -612,7 +655,14 @@ def _thumbnail_worker(
     except Exception as e:  # noqa: BLE001
         if overwrite or not had_existing:
             try:
-                _generate_thumbnails_for_pdf_bytes(b"", date_str, arxiv_id)
+                generate_thumbnails_from_pdf_bytes(
+                    b"",
+                    large_png,
+                    small_png,
+                    max_pages=THUMB_PAGES,
+                    dpi=THUMB_RENDER_DPI,
+                    lowres_max_width=THUMB_LOWRES_MAX_WIDTH,
+                )
             except Exception:
                 pass
         return ThumbnailUpdate(arxiv_id=arxiv_id, ok=False, large_png=large_png, small_png=small_png, error=str(e))
