@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import re
+import time
 import urllib.request
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import fitz
 
@@ -53,34 +54,63 @@ def _ensure_rgb_no_alpha(pix: fitz.Pixmap) -> fitz.Pixmap:
     return pix
 
 
-def _render_pages_doc(doc: fitz.Document, *, max_pages: int = DEFAULT_MAX_PAGES, dpi: int = DEFAULT_DPI) -> List[fitz.Pixmap]:
+def _render_pages_doc(
+    doc: fitz.Document,
+    *,
+    max_pages: int = DEFAULT_MAX_PAGES,
+    dpi: int = DEFAULT_DPI,
+    timings: Optional[dict[str, Any]] = None,
+) -> List[fitz.Pixmap]:
     n = min(max_pages, doc.page_count)
+    if timings is not None:
+        timings["doc_pages"] = int(doc.page_count)
+        timings["rendered_pages"] = int(n)
     pixmaps: List[fitz.Pixmap] = []
+    page_times: List[float] = []
     for i in range(n):
+        t0 = time.perf_counter()
         page = doc.load_page(i)
         pix = page.get_pixmap(dpi=dpi, alpha=False)
         pixmaps.append(_ensure_rgb_no_alpha(pix))
+        page_times.append(time.perf_counter() - t0)
+    if timings is not None:
+        timings["render_page_s"] = page_times
+        timings["render_pages_s"] = float(sum(page_times))
     return pixmaps
 
 
 def _render_pages_from_path(
-    pdf_path: Path, *, max_pages: int = DEFAULT_MAX_PAGES, dpi: int = DEFAULT_DPI
+    pdf_path: Path,
+    *,
+    max_pages: int = DEFAULT_MAX_PAGES,
+    dpi: int = DEFAULT_DPI,
+    timings: Optional[dict[str, Any]] = None,
 ) -> List[fitz.Pixmap]:
+    t0 = time.perf_counter()
     doc = fitz.open(str(pdf_path))
+    if timings is not None:
+        timings["open_pdf_s"] = float(time.perf_counter() - t0)
     try:
-        return _render_pages_doc(doc, max_pages=max_pages, dpi=dpi)
+        return _render_pages_doc(doc, max_pages=max_pages, dpi=dpi, timings=timings)
     finally:
         doc.close()
 
 
 def _render_pages_from_bytes(
-    pdf_bytes: bytes, *, max_pages: int = DEFAULT_MAX_PAGES, dpi: int = DEFAULT_DPI
+    pdf_bytes: bytes,
+    *,
+    max_pages: int = DEFAULT_MAX_PAGES,
+    dpi: int = DEFAULT_DPI,
+    timings: Optional[dict[str, Any]] = None,
 ) -> List[fitz.Pixmap]:
     if not _looks_like_pdf(pdf_bytes):
         raise ValueError("Expected PDF bytes, got non-PDF content.")
+    t0 = time.perf_counter()
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    if timings is not None:
+        timings["open_pdf_s"] = float(time.perf_counter() - t0)
     try:
-        return _render_pages_doc(doc, max_pages=max_pages, dpi=dpi)
+        return _render_pages_doc(doc, max_pages=max_pages, dpi=dpi, timings=timings)
     finally:
         doc.close()
 
@@ -235,6 +265,7 @@ def generate_thumbnails(
     max_pages: int = DEFAULT_MAX_PAGES,
     dpi: int = DEFAULT_DPI,
     lowres_max_width: int = LOWRES_MAX_WIDTH,
+    timings: Optional[dict[str, Any]] = None,
 ) -> Tuple[int, int, int, int]:
     """
     Returns: (width, height, small_width, small_height)
@@ -242,18 +273,46 @@ def generate_thumbnails(
     out_png.parent.mkdir(parents=True, exist_ok=True)
     out_small_png.parent.mkdir(parents=True, exist_ok=True)
 
+    total_t0 = time.perf_counter()
     try:
-        pixmaps = _render_pages_from_path(pdf_path, max_pages=max_pages, dpi=dpi)
+        pixmaps = _render_pages_from_path(pdf_path, max_pages=max_pages, dpi=dpi, timings=timings)
+
+        t0 = time.perf_counter()
         stitched = _stitch_horiz(pixmaps, dpi=dpi)
+        if timings is not None:
+            timings["stitch_s"] = float(time.perf_counter() - t0)
+            timings["used_placeholder"] = False
     except Exception:  # noqa: BLE001 - best-effort thumbnail generation
+        t0 = time.perf_counter()
         stitched = _placeholder_pixmap(width=600, height=200, text=DEFAULT_PLACEHOLDER_TEXT)
         dpi = 72
+        if timings is not None:
+            timings["placeholder_s"] = float(time.perf_counter() - t0)
+            timings["used_placeholder"] = True
 
+    t0 = time.perf_counter()
     _save_png(stitched, out_png, dpi=dpi)
+    if timings is not None:
+        timings["save_large_s"] = float(time.perf_counter() - t0)
     try:
+        t0 = time.perf_counter()
         small_w, small_h = _save_lowres_variant_pixmap(stitched, out_small_png, max_width=lowres_max_width)
+        if timings is not None:
+            timings["save_small_s"] = float(time.perf_counter() - t0)
     except Exception:
         small_w, small_h = stitched.width, stitched.height
+        if timings is not None:
+            timings["save_small_s"] = None
+
+    if timings is not None:
+        timings["out_w"] = int(stitched.width)
+        timings["out_h"] = int(stitched.height)
+        timings["out_small_w"] = int(small_w)
+        timings["out_small_h"] = int(small_h)
+        timings["dpi"] = int(dpi)
+        timings["max_pages"] = int(max_pages)
+        timings["lowres_max_width"] = int(lowres_max_width)
+        timings["total_s"] = float(time.perf_counter() - total_t0)
     return stitched.width, stitched.height, small_w, small_h
 
 
@@ -265,6 +324,7 @@ def generate_thumbnails_from_pdf_bytes(
     max_pages: int = DEFAULT_MAX_PAGES,
     dpi: int = DEFAULT_DPI,
     lowres_max_width: int = LOWRES_MAX_WIDTH,
+    timings: Optional[dict[str, Any]] = None,
 ) -> Tuple[int, int, int, int]:
     """
     Render a PDF (already in memory) and create a horizontal thumbnail of the first few pages.
@@ -276,16 +336,45 @@ def generate_thumbnails_from_pdf_bytes(
     out_png.parent.mkdir(parents=True, exist_ok=True)
     out_small_png.parent.mkdir(parents=True, exist_ok=True)
 
+    total_t0 = time.perf_counter()
     try:
-        pixmaps = _render_pages_from_bytes(pdf_bytes, max_pages=max_pages, dpi=dpi)
+        pixmaps = _render_pages_from_bytes(pdf_bytes, max_pages=max_pages, dpi=dpi, timings=timings)
+
+        t0 = time.perf_counter()
         stitched = _stitch_horiz(pixmaps, dpi=dpi)
+        if timings is not None:
+            timings["stitch_s"] = float(time.perf_counter() - t0)
+            timings["used_placeholder"] = False
     except Exception:  # noqa: BLE001 - best-effort thumbnail generation
+        t0 = time.perf_counter()
         stitched = _placeholder_pixmap(width=600, height=200, text=DEFAULT_PLACEHOLDER_TEXT)
         dpi = 72
+        if timings is not None:
+            timings["placeholder_s"] = float(time.perf_counter() - t0)
+            timings["used_placeholder"] = True
 
+    t0 = time.perf_counter()
     _save_png(stitched, out_png, dpi=dpi)
+    if timings is not None:
+        timings["save_large_s"] = float(time.perf_counter() - t0)
     try:
+        t0 = time.perf_counter()
         small_w, small_h = _save_lowres_variant_pixmap(stitched, out_small_png, max_width=lowres_max_width)
+        if timings is not None:
+            timings["save_small_s"] = float(time.perf_counter() - t0)
     except Exception:
         small_w, small_h = stitched.width, stitched.height
+        if timings is not None:
+            timings["save_small_s"] = None
+
+    if timings is not None:
+        timings["pdf_bytes"] = int(len(pdf_bytes))
+        timings["out_w"] = int(stitched.width)
+        timings["out_h"] = int(stitched.height)
+        timings["out_small_w"] = int(small_w)
+        timings["out_small_h"] = int(small_h)
+        timings["dpi"] = int(dpi)
+        timings["max_pages"] = int(max_pages)
+        timings["lowres_max_width"] = int(lowres_max_width)
+        timings["total_s"] = float(time.perf_counter() - total_t0)
     return stitched.width, stitched.height, small_w, small_h

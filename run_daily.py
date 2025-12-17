@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import time
+import threading
 import urllib.parse
 import urllib.error
 import urllib.request
@@ -34,6 +35,7 @@ THUMB_RENDER_DPI = 300
 THUMB_LOWRES_MAX_WIDTH = 1200
 THUMBNAIL_VERSION = 3
 DEFAULT_THUMB_WORKERS = 10
+_THUMB_TIMING_PRINT_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -610,7 +612,13 @@ def _generate_thumbnails_for_pdf(pdf_path: Path, date_str: str, arxiv_id: str) -
     return large_png, small_png
 
 
-def _generate_thumbnails_for_pdf_bytes(pdf_bytes: bytes, date_str: str, arxiv_id: str) -> Tuple[Path, Path]:
+def _generate_thumbnails_for_pdf_bytes(
+    pdf_bytes: bytes,
+    date_str: str,
+    arxiv_id: str,
+    *,
+    timings: Optional[Dict[str, Any]] = None,
+) -> Tuple[Path, Path]:
     large_png, small_png = _thumbnail_paths(date_str, arxiv_id)
     generate_thumbnails_from_pdf_bytes(
         pdf_bytes,
@@ -619,6 +627,7 @@ def _generate_thumbnails_for_pdf_bytes(pdf_bytes: bytes, date_str: str, arxiv_id
         max_pages=THUMB_PAGES,
         dpi=THUMB_RENDER_DPI,
         lowres_max_width=THUMB_LOWRES_MAX_WIDTH,
+        timings=timings,
     )
     return large_png, small_png
 
@@ -638,6 +647,44 @@ def _build_codex_fill_cmd(args: argparse.Namespace, *, input_path: Path) -> List
     return cmd
 
 
+def _emit_thumbnail_timing_log(
+    *,
+    arxiv_id: str,
+    date_str: str,
+    pdf_url: str,
+    ok: bool,
+    timings: Dict[str, Any],
+    error: Optional[str] = None,
+    large_png: Optional[Path] = None,
+    small_png: Optional[Path] = None,
+) -> None:
+    payload: Dict[str, Any] = {
+        "arxiv_id": arxiv_id,
+        "date": date_str,
+        "ok": ok,
+        "pdf_url": pdf_url,
+    }
+    payload.update(timings)
+    if error:
+        payload["error"] = error
+    if large_png is not None:
+        payload["large_png"] = str(large_png)
+        try:
+            payload["large_png_bytes"] = int(large_png.stat().st_size)
+        except FileNotFoundError:
+            payload["large_png_bytes"] = None
+    if small_png is not None:
+        payload["small_png"] = str(small_png)
+        try:
+            payload["small_png_bytes"] = int(small_png.stat().st_size)
+        except FileNotFoundError:
+            payload["small_png_bytes"] = None
+
+    line = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    with _THUMB_TIMING_PRINT_LOCK:
+        print(f"[ThumbTiming] {line}", flush=True)
+
+
 def _thumbnail_worker(
     *,
     arxiv_id: str,
@@ -645,16 +692,36 @@ def _thumbnail_worker(
     date_str: str,
     pdf_cfg: FetchConfig,
     overwrite: bool = False,
+    log_timings: bool = False,
 ) -> ThumbnailUpdate:
     large_png, small_png = _thumbnail_paths(date_str, arxiv_id)
     had_existing = large_png.exists() and small_png.exists()
+    timings: Dict[str, Any] = {"had_existing": had_existing}
+    worker_t0 = time.perf_counter()
     try:
+        t0 = time.perf_counter()
         pdf_bytes = _fetch_pdf_bytes(pdf_url, pdf_cfg)
-        _generate_thumbnails_for_pdf_bytes(pdf_bytes, date_str, arxiv_id)
+        timings["fetch_pdf_s"] = float(time.perf_counter() - t0)
+        timings["pdf_bytes_fetched"] = int(len(pdf_bytes))
+
+        _generate_thumbnails_for_pdf_bytes(pdf_bytes, date_str, arxiv_id, timings=timings)
+        timings["worker_total_s"] = float(time.perf_counter() - worker_t0)
+        if log_timings:
+            _emit_thumbnail_timing_log(
+                arxiv_id=arxiv_id,
+                date_str=date_str,
+                pdf_url=pdf_url,
+                ok=True,
+                timings=timings,
+                large_png=large_png,
+                small_png=small_png,
+            )
         return ThumbnailUpdate(arxiv_id=arxiv_id, ok=True, large_png=large_png, small_png=small_png)
     except Exception as e:  # noqa: BLE001
         if overwrite or not had_existing:
             try:
+                fallback_timings: Dict[str, Any] = {}
+                t0 = time.perf_counter()
                 generate_thumbnails_from_pdf_bytes(
                     b"",
                     large_png,
@@ -662,9 +729,25 @@ def _thumbnail_worker(
                     max_pages=THUMB_PAGES,
                     dpi=THUMB_RENDER_DPI,
                     lowres_max_width=THUMB_LOWRES_MAX_WIDTH,
+                    timings=fallback_timings,
                 )
-            except Exception:
-                pass
+                timings["fallback_total_s"] = float(time.perf_counter() - t0)
+                for key, value in fallback_timings.items():
+                    timings[f"fallback_{key}"] = value
+            except Exception as fallback_exc:  # noqa: BLE001
+                timings["fallback_error"] = str(fallback_exc) or "thumbnail_fallback_failed"
+        timings["worker_total_s"] = float(time.perf_counter() - worker_t0)
+        if log_timings:
+            _emit_thumbnail_timing_log(
+                arxiv_id=arxiv_id,
+                date_str=date_str,
+                pdf_url=pdf_url,
+                ok=False,
+                timings=timings,
+                error=str(e),
+                large_png=large_png,
+                small_png=small_png,
+            )
         return ThumbnailUpdate(arxiv_id=arxiv_id, ok=False, large_png=large_png, small_png=small_png, error=str(e))
 
 
@@ -740,6 +823,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--thumb-overwrite",
         action="store_true",
         help="Regenerate thumbnails even if image files already exist.",
+    )
+    parser.add_argument(
+        "--thumb-timing",
+        action="store_true",
+        help="Print per-paper thumbnail step timings as JSON log lines.",
     )
     parser.add_argument(
         "--skip-codex",
@@ -978,6 +1066,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     date_str=date_str,
                     pdf_cfg=pdf_cfg,
                     overwrite=args.thumb_overwrite,
+                    log_timings=args.thumb_timing,
                 ): arxiv_id
                 for arxiv_id, pdf_url in to_generate
             }

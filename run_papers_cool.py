@@ -247,6 +247,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Regenerate thumbnails even if image files already exist.",
     )
     parser.add_argument(
+        "--thumb-timing",
+        action="store_true",
+        help="Print per-paper thumbnail step timings as JSON log lines.",
+    )
+    parser.add_argument(
         "--skip-codex",
         action="store_true",
         help="Skip running codex_fill_zh.py after metadata is fetched.",
@@ -503,6 +508,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 date_str=date_str,
                 pdf_cfg=pdf_cfg,
                 overwrite=args.thumb_overwrite,
+                log_timings=args.thumb_timing,
             ): arxiv_id
             for arxiv_id, pdf_url in to_generate
         }

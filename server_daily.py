@@ -101,6 +101,8 @@ def _run_one_cycle(args: argparse.Namespace) -> bool:
     cmd = [sys.executable, str(run_daily_path), "--thumb-workers", str(int(args.thumb_workers))]
     if args.thumb_overwrite:
         cmd.append("--thumb-overwrite")
+    if args.thumb_timing:
+        cmd.append("--thumb-timing")
     if args.skip_codex:
         cmd.append("--skip-codex")
     cmd += ["--codex-fill", str(codex_fill_path)]
@@ -183,6 +185,11 @@ def main() -> int:
         "--thumb-overwrite",
         action="store_true",
         help="Forwarded to run_daily.py --thumb-overwrite.",
+    )
+    parser.add_argument(
+        "--thumb-timing",
+        action="store_true",
+        help="Forwarded to run_daily.py --thumb-timing.",
     )
 
     parser.add_argument(
