@@ -123,7 +123,7 @@ def _stitch_horiz(pixmaps: List[fitz.Pixmap], *, dpi: int = DEFAULT_DPI) -> fitz
     max_h = max(p.height for p in pixmaps)
 
     out = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, total_w, max_h), 0)
-    out.set_rect(out.irect, (255, 255, 255))
+    # out.set_rect(out.irect, (255, 255, 255))
 
     x = 0
     for p in pixmaps:
