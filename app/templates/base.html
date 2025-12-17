@@ -6,6 +6,7 @@
   <title>{% block title %}CodeArXiv{% endblock %}</title>
   <link rel="icon" type="image/png" href="{{ url_for('static', filename='logos/codearxiv.png') }}">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.css" rel="stylesheet">
   <link href="{{ url_for('static', filename='styles.css') }}" rel="stylesheet">
 </head>
 <body>
@@ -32,33 +33,20 @@
         {% if g.user %}
         <form class="d-flex align-items-center gap-2 nav-date-form my-2 my-lg-0" method="get" action="{{ url_for('feed.index') }}">
           <label class="nav-date-label text-muted small d-none d-lg-inline" for="navDate">{{ lang_copy.nav_date_label }}</label>
-          {% set date_options = nav_dates|default([]) %}
-          {% if date_options %}
-            <select
-              id="navDate"
-              class="form-select form-select-sm nav-date-input"
-              name="date"
-              aria-label="{{ lang_copy.nav_date_aria }}"
-              onchange="this.form.submit()"
-            >
-              {% set selected_date = nav_selected_date|default('') %}
-              {% for date_value in date_options %}
-                <option value="{{ date_value }}" {% if date_value == selected_date %}selected{% endif %}>{{ date_value }}</option>
-              {% endfor %}
-            </select>
-          {% else %}
-            <input
-              id="navDate"
-              class="form-control form-control-sm nav-date-input"
-              type="date"
-              name="date"
-              value="{{ nav_selected_date|default('') }}"
-              {% if nav_min_date %}min="{{ nav_min_date }}"{% endif %}
-              {% if nav_max_date %}max="{{ nav_max_date }}"{% endif %}
-              aria-label="{{ lang_copy.nav_date_aria }}"
-              onchange="this.form.submit()"
-            >
-          {% endif %}
+          <input
+            id="navDate"
+            class="form-control form-control-sm nav-date-input"
+            type="text"
+            name="date"
+            value="{{ nav_selected_date|default('') }}"
+            placeholder="YYYY-MM-DD"
+            autocomplete="off"
+            data-lang="{{ current_language or 'en' }}"
+            data-min-date="{{ nav_min_date or '' }}"
+            data-max-date="{{ nav_max_date or '' }}"
+            data-available-dates='{{ nav_available_dates|default([])|tojson }}'
+            aria-label="{{ lang_copy.nav_date_aria }}"
+          >
         </form>
         {% endif %}
         <ul class="navbar-nav ms-auto">
@@ -101,5 +89,48 @@
     {% block content %}{% endblock %}
   </main>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/l10n/zh.js"></script>
+  <script>
+    (() => {
+      const input = document.getElementById('navDate');
+      if (!input || typeof window.flatpickr !== 'function') return;
+
+      let availableDates = [];
+      try {
+        availableDates = JSON.parse(input.dataset.availableDates || '[]');
+      } catch (_) {
+        availableDates = [];
+      }
+
+      const config = {
+        dateFormat: 'Y-m-d',
+        defaultDate: input.value || null,
+        disableMobile: true,
+        allowInput: false,
+        clickOpens: true,
+        onChange: (_, dateStr) => {
+          if (!dateStr) return;
+          input.value = dateStr;
+          input.form?.submit();
+        },
+      };
+
+      if (Array.isArray(availableDates) && availableDates.length) {
+        config.enable = availableDates;
+      } else {
+        const minDate = input.dataset.minDate || null;
+        const maxDate = input.dataset.maxDate || null;
+        if (minDate) config.minDate = minDate;
+        if (maxDate) config.maxDate = maxDate;
+      }
+
+      if ((input.dataset.lang || '').startsWith('zh') && window.flatpickr?.l10ns?.zh) {
+        config.locale = window.flatpickr.l10ns.zh;
+      }
+
+      window.flatpickr(input, config);
+    })();
+  </script>
 </body>
 </html>

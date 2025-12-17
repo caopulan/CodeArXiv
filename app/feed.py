@@ -178,16 +178,15 @@ def inject_nav_date_context():
     if selected_date is None:
         selected_date = dates[-1] if dates else dt.date.today()
 
-    nav_dates = [d.isoformat() for d in reversed(dates)]
-    selected_iso = selected_date.isoformat()
-    if selected_iso and selected_iso not in nav_dates:
-        nav_dates.insert(0, selected_iso)
+    available_dates = [d.isoformat() for d in dates]
+    if dates and selected_date not in dates:
+        selected_date = dates[-1]
 
     return {
         "nav_min_date": dates[0].isoformat() if dates else None,
         "nav_max_date": dates[-1].isoformat() if dates else None,
         "nav_selected_date": selected_date.isoformat(),
-        "nav_dates": nav_dates,
+        "nav_available_dates": available_dates,
     }
 
 
@@ -634,6 +633,14 @@ def index():
         target_date = _parse_date_value(last_history_row["date"])
     if target_date is None:
         target_date = _latest_pub_date()
+
+    available_dates = paper_store.list_dates()
+    if available_dates and target_date not in available_dates:
+        target_date = available_dates[-1]
+        if date_str:
+            query_args = request.args.to_dict(flat=False)
+            query_args["date"] = [target_date.isoformat()]
+            return redirect(url_for("feed.index", **query_args))
 
     g.nav_date = target_date
     rows = paper_store.load_date(target_date)
