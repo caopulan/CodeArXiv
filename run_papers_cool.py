@@ -203,7 +203,8 @@ def _fill_missing_from_papers_cool(entry: Dict[str, Any], cool: Dict[str, Any]) 
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    load_dotenv()
+    load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
+    daily.configure_data_paths()
     default_codex_model = _env_str("CODEX_MODEL")
     default_codex_batch_size = max(1, _env_int("CODEX_BATCH_SIZE", 5))
     default_codex_timeout = max(1, _env_int("CODEX_TIMEOUT", 300))

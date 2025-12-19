@@ -124,7 +124,7 @@ def _run_one_cycle(args: argparse.Namespace) -> bool:
 
 
 def main() -> int:
-    load_dotenv()
+    load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
     default_codex_model = _env_str("CODEX_MODEL")
     default_codex_batch_size = max(1, _env_int("CODEX_BATCH_SIZE", 5))
     default_codex_timeout = max(1, _env_int("CODEX_TIMEOUT", 300))

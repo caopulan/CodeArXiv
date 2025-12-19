@@ -12,12 +12,17 @@ from . import feed
 
 def create_app(test_config=None):
     """Application factory for the frontend-only paper viewer."""
-    load_dotenv()
+    load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
     app = Flask(__name__, instance_relative_config=True)
 
     default_db_path = Path(app.instance_path) / "app.db"
-    default_data_dir = Path(app.root_path).parent / "CodeArXiv-data"
-    data_dir_env = Path(os.getenv("PAPERS_DATA_DIR", str(default_data_dir))).expanduser()
+    default_data_dir = (Path(app.root_path).parent / "CodeArXiv-data").resolve()
+    raw_data_dir = (os.getenv("PAPERS_DATA_DIR") or "").strip()
+    data_dir_env = Path(raw_data_dir).expanduser() if raw_data_dir else default_data_dir
+    if not data_dir_env.is_absolute():
+        data_dir_env = (Path(app.root_path).parent / data_dir_env).resolve()
+    else:
+        data_dir_env = data_dir_env.resolve()
     no_auth_env = os.getenv("NO_AUTH_MODE", "false").lower()
     no_auth_mode = no_auth_env in ("1", "true", "yes", "on")
     app.config.from_mapping(

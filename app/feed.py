@@ -324,7 +324,7 @@ def _normalize_image_path(raw_path: Optional[str]) -> Optional[str]:
 
 
 def _data_dir() -> Path:
-    base_cfg = current_app.config.get("PAPERS_DATA_DIR", "CodeArXiv-data")
+    base_cfg = (current_app.config.get("PAPERS_DATA_DIR", "CodeArXiv-data") or "").strip()
     base = Path(base_cfg).expanduser()
     if not base.is_absolute():
         base = (Path(current_app.root_path).parent / base).resolve()

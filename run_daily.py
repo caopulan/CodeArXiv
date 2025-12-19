@@ -24,11 +24,31 @@ from dotenv import load_dotenv
 from thumbnail import generate_thumbnails, generate_thumbnails_from_pdf_bytes
 
 
+REPO_ROOT = Path(__file__).resolve().parent
+
+
+def _resolve_results_dir(raw: Optional[str]) -> Path:
+    value = (raw or "").strip()
+    base = Path(value).expanduser() if value else (REPO_ROOT / "CodeArXiv-data")
+    if not base.is_absolute():
+        base = (REPO_ROOT / base).resolve()
+    else:
+        base = base.resolve()
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def configure_data_paths() -> None:
+    global RESULTS_DIR, IMAGES_DIR
+    RESULTS_DIR = _resolve_results_dir(os.getenv("PAPERS_DATA_DIR"))
+    IMAGES_DIR = RESULTS_DIR / "images"
+
+
 LIST_CATEGORIES = ["cs.CV", "cs.AI", "cs.CG", "cs.CL"]
 LIST_SHOW = 2000
 LIST_URL_TEMPLATE = "https://arxiv.org/list/{category}/pastweek?show={show}"
 ARXIV_API_URL = "https://export.arxiv.org/api/query"
-RESULTS_DIR = Path("CodeArXiv-data")
+RESULTS_DIR = _resolve_results_dir(None)
 IMAGES_DIR = RESULTS_DIR / "images"
 THUMB_PAGES = 5
 THUMB_RENDER_DPI = 300
@@ -180,7 +200,7 @@ def _load_embedding_config_from_env(
     sleep_s: float,
     max_chars: int,
 ) -> Optional[EmbeddingConfig]:
-    load_dotenv()
+    load_dotenv(dotenv_path=REPO_ROOT / ".env")
     model = (os.getenv("EMBEDDING_MODEL") or "").strip()
     api_key = (os.getenv("EMBEDDING_API_KEY") or "").strip()
     base_url = (os.getenv("EMBEDDING_BASE_URL") or "").strip()
@@ -801,7 +821,8 @@ def _apply_thumbnail_update(entry: Dict[str, Any], update: ThumbnailUpdate) -> b
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    load_dotenv()
+    load_dotenv(dotenv_path=REPO_ROOT / ".env")
+    configure_data_paths()
     default_codex_model = _env_str("CODEX_MODEL")
     default_codex_batch_size = max(1, _env_int("CODEX_BATCH_SIZE", 5))
     default_codex_timeout = max(1, _env_int("CODEX_TIMEOUT", 300))

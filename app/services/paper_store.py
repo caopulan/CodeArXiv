@@ -27,7 +27,7 @@ IMAGE_PATH_KEYS = (
 
 
 def _data_dir() -> Path:
-    base_cfg = current_app.config.get("PAPERS_DATA_DIR", "CodeArXiv-data")
+    base_cfg = (current_app.config.get("PAPERS_DATA_DIR", "CodeArXiv-data") or "").strip()
     base = Path(base_cfg).expanduser()
     if not base.is_absolute():
         base = (Path(current_app.root_path).parent / base).resolve()
@@ -108,14 +108,34 @@ def _date_path(date_val: Union[dt.date, str]) -> Path:
     return _data_dir() / f"{date_str}.json"
 
 
+def _existing_date_path(date_val: Union[dt.date, str]) -> Path:
+    """
+    Resolve a date JSON path, tolerating case variations in the ".json" suffix.
+
+    Prefers the canonical "{YYYY-MM-DD}.json" filename, but falls back to any file
+    in the data dir whose stem matches and whose suffix lowercases to ".json".
+    """
+    date_str = date_val if isinstance(date_val, str) else date_val.isoformat()
+    data_dir = _data_dir()
+    canonical = data_dir / f"{date_str}.json"
+    if canonical.exists():
+        return canonical
+    for path in data_dir.iterdir():
+        if path.is_file() and path.stem == date_str and path.suffix.lower() == ".json":
+            return path
+    return canonical
+
+
 def list_dates() -> List[dt.date]:
-    dates: List[dt.date] = []
-    for path in _data_dir().glob("*.json"):
+    seen: set[dt.date] = set()
+    for path in _data_dir().iterdir():
+        if not path.is_file() or path.suffix.lower() != ".json":
+            continue
         try:
-            dates.append(dt.date.fromisoformat(path.stem))
+            seen.add(dt.date.fromisoformat(path.stem))
         except ValueError:
             continue
-    return sorted(dates)
+    return sorted(seen)
 
 
 def latest_date() -> Optional[dt.date]:
@@ -236,7 +256,7 @@ def _attach_images(date_str: str, papers: List[Dict[str, Any]]) -> List[Dict[str
 
 
 def load_date(date_val: Union[dt.date, str], *, with_images: bool = True) -> List[Dict[str, Any]]:
-    path = _date_path(date_val)
+    path = _existing_date_path(date_val)
     raw = _load_raw(path)
     papers = [_normalize_paper(item) for item in raw if isinstance(item, dict)]
     if not with_images:
