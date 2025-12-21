@@ -955,6 +955,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             for arxiv_id in ids:
                 id_to_cats.setdefault(arxiv_id, set()).add(category)
         ids = sorted(ids_set)
+        if not ids:
+            print(
+                f"[Step1] {date_str}: no ids; skip writing results and thumbnails.",
+                flush=True,
+            )
+            continue
 
         results_path = RESULTS_DIR / f"{date_str}.json"
         results: Dict[str, Dict[str, Any]] = {}

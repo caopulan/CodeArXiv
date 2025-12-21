@@ -382,6 +382,12 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     ids = sorted(cool_map.keys())
     date_str = list_date.isoformat()
+    if not ids:
+        print(
+            f"[Step1] {date_str}: no ids; skip writing results and thumbnails.",
+            flush=True,
+        )
+        return 0
     results_path = daily.RESULTS_DIR / f"{date_str}.json"
 
     results: Dict[str, Dict[str, Any]] = {}
