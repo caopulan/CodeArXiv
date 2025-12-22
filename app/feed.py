@@ -1000,9 +1000,15 @@ def create_favorite():
 @login_required
 def add_to_favorites():
     paper_id = request.form.get("paper_id")
+    wants_json = (
+        request.headers.get("X-Requested-With") == "XMLHttpRequest"
+        or "application/json" in (request.headers.get("Accept") or "")
+    )
     selected_ids = request.form.getlist("favorite_ids")
     new_folder = request.form.get("new_favorite_name", "").strip()
     if not paper_id:
+        if wants_json:
+            return jsonify({"error": "Missing paper id."}), 400
         flash("Missing paper id.", "warning")
         return redirect(url_for("feed.index"))
 
@@ -1027,12 +1033,29 @@ def add_to_favorites():
         ):
             continue
         if favorites_service.add_paper_to_favorite(fav_id, paper_id):
-            favorites_service.recompute_favorite_embedding(fav_id)
             added += 1
+        # Refresh embeddings even if the paper was already present.
+        favorites_service.recompute_favorite_embedding(fav_id)
     if added:
         flash(f"Added to {added} favorite(s).", "success")
     else:
         flash("No favorites selected.", "info")
+    if wants_json:
+        db_conn = get_db()
+        saved = (
+            db_conn.execute(
+                """
+                SELECT 1
+                FROM FavoritePapers
+                JOIN Favorites ON Favorites.id = FavoritePapers.favorite_id
+                WHERE Favorites.user_id = ? AND FavoritePapers.paper_id = ?
+                LIMIT 1
+                """,
+                (g.user["id"], paper_id),
+            ).fetchone()
+            is not None
+        )
+        return jsonify({"added": added, "saved": saved})
     return redirect(url_for("feed.paper_detail", paper_id=paper_id))
 
 

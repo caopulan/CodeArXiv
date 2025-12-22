@@ -298,10 +298,23 @@
         const formData = new FormData(form);
         fetch({{ url_for('feed.add_to_favorites')|tojson }}, {
           method: 'POST',
+          headers: {
+            'Accept': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest',
+          },
           body: formData,
-        }).then(() => {
+        }).then(res => {
+          if (!res.ok) throw new Error();
+          const contentType = res.headers.get('content-type') || '';
+          if (contentType.includes('application/json')) {
+            return res.json();
+          }
+          return {};
+        }).then(payload => {
           hideFavModal();
-          if (btnEl) markFavButton(btnEl, true);
+          if (!btnEl) return;
+          const saved = payload?.saved ?? (getCheckedIds().size > 0);
+          markFavButton(btnEl, saved);
         }).catch(() => {
           hideFavModal();
         });
