@@ -15,6 +15,8 @@ from dotenv import load_dotenv
 
 
 RESULTS_DIR = Path("results")
+TAG_PROMPT_PATH = Path(__file__).resolve().parent / "tag_prompt.md"
+TAG_KEYS = ("task", "method", "property", "special")
 
 
 def _now_iso() -> str:
@@ -62,6 +64,47 @@ def _extract_json_object(text: str) -> Dict[str, Any]:
     if not isinstance(obj, dict):
         raise ValueError("Codex output JSON is not an object.")
     return obj
+
+
+def _load_tag_prompt(path: Path) -> str:
+    content = path.read_text(encoding="utf-8")
+    if not content.strip():
+        raise ValueError(f"Tag prompt is empty: {path}")
+    return content.strip()
+
+
+def _normalize_tag_list(raw: Any) -> list[str]:
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not raw:
+            return []
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raw = [t.strip() for t in raw.split(",") if t.strip()]
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raw = [raw]
+    return [str(t).strip() for t in raw if str(t).strip()]
+
+
+def _parse_tag_payload(payload: Dict[str, Any]) -> Dict[str, list[str]]:
+    missing = [k for k in TAG_KEYS if k not in payload]
+    if missing:
+        raise ValueError(f"Codex output missing tag keys: {', '.join(missing)}")
+    return {k: _normalize_tag_list(payload.get(k)) for k in TAG_KEYS}
+
+
+def _flatten_tag_payload(tag_payload: Dict[str, list[str]]) -> list[str]:
+    seen = set()
+    merged: list[str] = []
+    for key in TAG_KEYS:
+        for tag in tag_payload.get(key, []):
+            if tag not in seen:
+                seen.add(tag)
+                merged.append(tag)
+    return merged
 
 
 def _env_int(name: str, default: int) -> int:
@@ -267,6 +310,80 @@ def _codex_translate_and_summarize_batch(
             pass
 
 
+def _codex_tag_batch(
+    *,
+    items: Dict[str, Dict[str, str]],
+    tag_prompt: str,
+    model: Optional[str],
+    reasoning_effort: str,
+    reasoning_summary: str,
+    timeout_s: int,
+) -> Dict[str, Dict[str, list[str]]]:
+    payload = []
+    for arxiv_id, v in items.items():
+        payload.append(
+            {
+                "arxiv_id": arxiv_id,
+                "title": (v.get("title") or "").strip(),
+                "abstract": (v.get("abstract") or "").strip(),
+            }
+        )
+
+    prompt = (
+        f"{tag_prompt.strip()}\n\n"
+        "你将收到一个 JSON 数组，每个元素包含 arxiv_id、title、abstract（对应 Title/Abstract）。\n"
+        "请对每个元素按照上面的标签体系打标，并输出一个 JSON 对象：key 为 arxiv_id，"
+        "value 为包含 task/method/property/special 的对象。\n"
+        "输出必须是严格 JSON，不要包含解释或 Markdown。\n"
+        "\n"
+        "输入 JSON：\n"
+        + json.dumps(payload, ensure_ascii=False)
+        + "\n\n"
+        "输出 JSON 示例：\n"
+        "{\"2512.00001\":{\"task\":[],\"method\":[],\"property\":[],\"special\":[]}}\n"
+    )
+
+    tmp_path = Path(f".codex_last_message.{os.getpid()}.txt")
+    try:
+        cmd = _build_codex_exec_cmd(
+            model=model,
+            reasoning_effort=reasoning_effort,
+            reasoning_summary=reasoning_summary,
+            tmp_path=tmp_path,
+        )
+
+        subprocess.run(
+            cmd,
+            input=prompt,
+            text=True,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout_s,
+        )
+
+        raw = tmp_path.read_text(encoding="utf-8", errors="replace")
+        obj = _extract_json_object(raw)
+        out: Dict[str, Dict[str, list[str]]] = {}
+
+        if len(items) == 1 and all(k in obj for k in TAG_KEYS):
+            only_id = next(iter(items.keys()))
+            out[only_id] = _parse_tag_payload(obj)
+            return out
+
+        for arxiv_id in items.keys():
+            v = obj.get(arxiv_id)
+            if not isinstance(v, dict):
+                continue
+            out[arxiv_id] = _parse_tag_payload(v)
+        return out
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)  # type: ignore[arg-type]
+        except Exception:
+            pass
+
+
 def main() -> int:
     load_dotenv()
     default_model = _env_str("CODEX_MODEL")
@@ -278,7 +395,9 @@ def main() -> int:
     default_reasoning_summary = (os.getenv("CODEX_REASONING_SUMMARY") or "").strip() or "concise"
 
     parser = argparse.ArgumentParser(
-        description="Fill title_zh/abstract_zh/summary_zh/summary_en in results JSON via Codex (LLM)."
+        description=(
+            "Fill title_zh/abstract_zh/summary_zh/summary_en and tags in results JSON via Codex (LLM)."
+        )
     )
     parser.add_argument(
         "--input",
@@ -290,7 +409,18 @@ def main() -> int:
         "--overwrite",
         action=argparse.BooleanOptionalAction,
         default=default_overwrite,
-        help="Overwrite existing translated/summary fields even if present.",
+        help="Overwrite existing translated/summary/tag fields even if present.",
+    )
+    parser.add_argument(
+        "--skip-tags",
+        action="store_true",
+        help="Skip tag generation via tag_prompt.md.",
+    )
+    parser.add_argument(
+        "--tag-prompt",
+        type=Path,
+        default=TAG_PROMPT_PATH,
+        help="Path to tag_prompt.md.",
     )
     parser.add_argument(
         "--limit",
@@ -338,6 +468,7 @@ def main() -> int:
 
     input_path: Path = args.input or _pick_latest_results_path(RESULTS_DIR)
     data: Dict[str, Dict[str, Any]] = json.loads(input_path.read_text(encoding="utf-8"))
+    tag_prompt = None if args.skip_tags else _load_tag_prompt(args.tag_prompt)
 
     arxiv_ids = sorted(data.keys())
     if args.limit and args.limit > 0:
@@ -346,6 +477,7 @@ def main() -> int:
     total = len(arxiv_ids)
     batch_size = max(1, int(args.batch_size))
     processed = 0
+    processed_ids: set[str] = set()
     idx = 0
     while idx < total:
         batch_ids = arxiv_ids[idx : idx + batch_size]
@@ -421,7 +553,9 @@ def main() -> int:
                     entry.setdefault("errors", {}).pop("codex_fill_zh", None)
                     if changed:
                         entry["updated_at"] = _now_iso()
-                        processed += 1
+                        if arxiv_id not in processed_ids:
+                            processed_ids.add(arxiv_id)
+                            processed += 1
                     data[arxiv_id] = entry
             except Exception as e:  # noqa: BLE001
                 for arxiv_id in items.keys():
@@ -430,6 +564,69 @@ def main() -> int:
                     data[arxiv_id] = entry
 
             _json_dump_atomic(data, input_path)
+
+        if tag_prompt:
+            tag_items: Dict[str, Dict[str, str]] = {}
+            for arxiv_id in batch_ids:
+                entry = data.get(arxiv_id) or {}
+                existing_tags = _normalize_tag_list(entry.get("tags"))
+                if existing_tags and not args.overwrite:
+                    continue
+                if entry.get("tags_generated") is True and not args.overwrite:
+                    continue
+
+                title = (entry.get("title_en") or entry.get("title_zh") or "").strip()
+                abstract = (entry.get("abstract_en") or entry.get("abstract_zh") or "").strip()
+                if not title or not abstract:
+                    entry.setdefault("errors", {})["codex_tag"] = "Missing title or abstract."
+                    data[arxiv_id] = entry
+                    continue
+
+                tag_items[arxiv_id] = {"title": title, "abstract": abstract}
+
+            if tag_items:
+                try:
+                    out_map = _codex_tag_batch(
+                        items=tag_items,
+                        tag_prompt=tag_prompt,
+                        model=args.model,
+                        reasoning_effort=str(args.reasoning_effort),
+                        reasoning_summary=str(args.reasoning_summary),
+                        timeout_s=args.timeout,
+                    )
+                    for arxiv_id in tag_items.keys():
+                        entry = data.get(arxiv_id) or {}
+                        out = out_map.get(arxiv_id)
+                        if not out:
+                            entry.setdefault("errors", {})["codex_tag"] = "Missing arxiv_id in Codex output."
+                            data[arxiv_id] = entry
+                            continue
+
+                        merged_tags = _flatten_tag_payload(out)
+                        existing_tags = _normalize_tag_list(entry.get("tags"))
+                        changed = False
+                        if args.overwrite or not existing_tags:
+                            if merged_tags != existing_tags:
+                                entry["tags"] = merged_tags
+                                changed = True
+                        if entry.get("tags_generated") is not True:
+                            entry["tags_generated"] = True
+                            changed = True
+
+                        entry.setdefault("errors", {}).pop("codex_tag", None)
+                        if changed:
+                            entry["updated_at"] = _now_iso()
+                            if arxiv_id not in processed_ids:
+                                processed_ids.add(arxiv_id)
+                                processed += 1
+                        data[arxiv_id] = entry
+                except Exception as e:  # noqa: BLE001
+                    for arxiv_id in tag_items.keys():
+                        entry = data.get(arxiv_id) or {}
+                        entry.setdefault("errors", {})["codex_tag"] = str(e)
+                        data[arxiv_id] = entry
+
+                _json_dump_atomic(data, input_path)
 
         print(f"[codex_fill_zh] {idx_end}/{total} (updated {processed}) -> {input_path}")
         idx = idx_end
