@@ -148,6 +148,14 @@ LANGUAGE_COPY = {
 def _copy_for_language(lang: str) -> dict:
     return LANGUAGE_COPY.get(lang, LANGUAGE_COPY["en"])
 
+def _available_dates() -> list[dt.date]:
+    """Memoize available dates for this request to avoid re-scanning the data dir."""
+    cached = getattr(g, "_available_dates", None)
+    if cached is None:
+        cached = paper_store.list_dates()
+        g._available_dates = cached
+    return cached
+
 
 def _current_language() -> str:
     lang = getattr(g, "language_preference", None)
@@ -166,7 +174,7 @@ def inject_language_context():
 
 @bp.app_context_processor
 def inject_nav_date_context():
-    dates = paper_store.list_dates()
+    dates = _available_dates()
     selected = getattr(g, "nav_date", None)
     selected_date: Optional[dt.date] = selected if isinstance(selected, dt.date) else None
     if selected_date is None:
@@ -189,6 +197,53 @@ def inject_nav_date_context():
         "nav_selected_date": selected_date.isoformat(),
         "nav_available_dates": available_dates,
     }
+
+@bp.before_app_request
+def set_default_nav_date():
+    """
+    Ensure the navbar date picker is consistent across pages.
+
+    Priority:
+    1) explicit ?date=YYYY-MM-DD if available
+    2) g.nav_date if already set by the view (e.g. paper_detail)
+    3) saved UserFilters.last_date if available
+    4) latest available date
+    5) today (no data)
+    """
+    # Avoid extra work on auth/static routes.
+    endpoint = request.endpoint or ""
+    if endpoint.startswith("auth.") or endpoint == "static":
+        return
+    if not g.get("user"):
+        return
+    if isinstance(getattr(g, "nav_date", None), dt.date):
+        return
+
+    dates = _available_dates()
+    if not dates:
+        g.nav_date = dt.date.today()
+        return
+
+    # 1) explicit query string date (only if it exists in data)
+    date_str = request.args.get("date")
+    if date_str:
+        parsed = _parse_date_value(date_str)
+        if parsed and parsed in dates:
+            g.nav_date = parsed
+            return
+
+    # 3) saved filters
+    try:
+        filters = _load_filters(g.user["id"])
+    except Exception:
+        filters = None
+    if filters:
+        last_date = filters.get("last_date")
+        if isinstance(last_date, dt.date) and last_date in dates:
+            g.nav_date = last_date
+            return
+
+    g.nav_date = dates[-1]
 
 
 def _latest_pub_date() -> dt.date:
