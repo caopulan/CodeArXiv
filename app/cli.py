@@ -1,6 +1,8 @@
 import click
 from flask.cli import with_appcontext
 
+from typing import Optional
+
 from .db import get_db
 from .services import favorites as favorites_service
 
@@ -8,7 +10,7 @@ from .services import favorites as favorites_service
 @click.command("recompute-favorites")
 @click.option("--user-id", type=int, default=None, help="Only recompute for a specific user id.")
 @with_appcontext
-def recompute_favorites_cmd(user_id: int | None):
+def recompute_favorites_cmd(user_id: Optional[int]):
     """Recompute favorite embeddings from current paper data."""
     db_conn = get_db()
     if user_id is None:

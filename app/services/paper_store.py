@@ -29,7 +29,7 @@ IMAGE_PATH_KEYS = (
 
 _INDEX_LOCK = threading.Lock()
 _PAPER_INDEX: dict[str, tuple[dt.date, Dict[str, Any]]] = {}
-_INDEX_SIGNATURE: tuple[int, int] | None = None
+_INDEX_SIGNATURE: Optional[tuple[int, int]] = None
 _SIG_CHECKED_AT_NS = 0
 _SIG_CHECK_INTERVAL_NS = 2_000_000_000  # 2s
 

@@ -1,9 +1,8 @@
-from __future__ import annotations
-
 import secrets
 from urllib.parse import urljoin, urlparse
 
 from flask import abort, request, session
+from typing import Optional
 
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "TRACE"}
 
@@ -37,7 +36,7 @@ def verify_csrf() -> None:
         abort(400)
 
 
-def is_safe_redirect_target(target: str | None) -> bool:
+def is_safe_redirect_target(target: Optional[str]) -> bool:
     if not target:
         return False
 
@@ -47,6 +46,5 @@ def is_safe_redirect_target(target: str | None) -> bool:
     return test.scheme in {"http", "https"} and ref.netloc == test.netloc
 
 
-def safe_redirect_target(target: str | None, fallback: str) -> str:
+def safe_redirect_target(target: Optional[str], fallback: str) -> str:
     return target if is_safe_redirect_target(target) else fallback
-
