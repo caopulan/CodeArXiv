@@ -153,6 +153,26 @@ def _is_rate_limited(db_conn, *, username: str, ip: str) -> bool:
 @bp.before_app_request
 def load_logged_in_user():
     if current_app.config.get("NO_AUTH_MODE"):
+        # In no-auth mode we auto-login a default user, but we should not
+        # overwrite an existing session identity (e.g. when a real user session
+        # already exists or when multiple workers have different defaults).
+        user_id = session.get("user_id")
+        if user_id is not None:
+            row = (
+                get_db()
+                .execute(
+                    "SELECT id, username, language_preference FROM Users WHERE id = ?",
+                    (user_id,),
+                )
+                .fetchone()
+            )
+            existing = _normalize_user_row(row)
+            if existing is not None:
+                g.user = existing
+                session.permanent = True
+                g.language_preference = existing.get("language_preference", "en")
+                return
+
         user = _ensure_default_user()
         session["user_id"] = user["id"]
         session.permanent = True
@@ -179,7 +199,8 @@ def login_required(view):
     @functools.wraps(view)
     def wrapped_view(**kwargs):
         if current_app.config.get("NO_AUTH_MODE"):
-            if g.get("user") is None:
+            # Keep any existing session identity; only fall back to the default.
+            if g.get("user") is None and session.get("user_id") is None:
                 user = _ensure_default_user()
                 session["user_id"] = user["id"]
                 g.user = user
