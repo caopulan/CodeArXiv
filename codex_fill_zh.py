@@ -7,6 +7,9 @@ import os
 import re
 import subprocess
 import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -17,6 +20,8 @@ from dotenv import load_dotenv
 RESULTS_DIR = Path("results")
 TAG_PROMPT_PATH = Path(__file__).resolve().parent / "tag_prompt.md"
 TAG_KEYS = ("task", "method", "property", "special")
+DEFAULT_KIMI_BASE_URL = "https://api.kimi.com/coding/v1"
+DEFAULT_KIMI_MODEL = "kimi-for-coding"
 
 
 def _now_iso() -> str:
@@ -59,10 +64,10 @@ def _extract_json_object(text: str) -> Dict[str, Any]:
     # Best-effort fallback: extract the first {...} block.
     m = re.search(r"\\{.*\\}", text, flags=re.DOTALL)
     if not m:
-        raise ValueError("No JSON object found in Codex output.")
+        raise ValueError("No JSON object found in LLM output.")
     obj = json.loads(m.group(0))
     if not isinstance(obj, dict):
-        raise ValueError("Codex output JSON is not an object.")
+        raise ValueError("LLM output JSON is not an object.")
     return obj
 
 
@@ -92,7 +97,7 @@ def _normalize_tag_list(raw: Any) -> list[str]:
 def _parse_tag_payload(payload: Dict[str, Any]) -> Dict[str, list[str]]:
     missing = [k for k in TAG_KEYS if k not in payload]
     if missing:
-        raise ValueError(f"Codex output missing tag keys: {', '.join(missing)}")
+        raise ValueError(f"LLM output missing tag keys: {', '.join(missing)}")
     return {k: _normalize_tag_list(payload.get(k)) for k in TAG_KEYS}
 
 
@@ -167,10 +172,181 @@ def _build_codex_exec_cmd(
     return cmd
 
 
+@dataclass(frozen=True)
+class _KimiConfig:
+    base_url: str
+    api_key: str
+    model: str
+    timeout_s: int
+    max_tokens: Optional[int] = None
+    temperature: float = 0.0
+
+
+def _env_int_opt(name: str) -> Optional[int]:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _env_float_opt(name: str) -> Optional[float]:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def _load_kimi_config_from_env(
+    *,
+    model: Optional[str],
+    timeout_s: int,
+    base_url: Optional[str] = None,
+) -> _KimiConfig:
+    api_key = (os.getenv("KIMI_API_KEY") or "").strip()
+    if api_key:
+        api_key = os.path.expandvars(api_key).strip()
+    if not api_key:
+        raise ValueError("Missing KIMI_API_KEY in environment for backend=kimi.")
+
+    raw_base = (base_url or os.getenv("KIMI_BASE_URL") or DEFAULT_KIMI_BASE_URL).strip()
+    if raw_base:
+        raw_base = os.path.expandvars(raw_base).strip()
+    base = raw_base.rstrip("/")
+    if not base:
+        raise ValueError("Missing KIMI_BASE_URL (or empty after expandvars).")
+
+    kimi_model = (model or os.getenv("KIMI_MODEL") or DEFAULT_KIMI_MODEL).strip()
+    if kimi_model:
+        kimi_model = os.path.expandvars(kimi_model).strip()
+    if not kimi_model:
+        raise ValueError("Missing KIMI_MODEL (or empty after expandvars).")
+
+    max_tokens = _env_int_opt("KIMI_MAX_OUTPUT_TOKENS")
+    temperature = _env_float_opt("KIMI_TEMPERATURE")
+
+    return _KimiConfig(
+        base_url=base,
+        api_key=api_key,
+        model=kimi_model,
+        timeout_s=max(1, int(timeout_s)),
+        max_tokens=max_tokens if (max_tokens is None or max_tokens > 0) else None,
+        temperature=float(temperature) if temperature is not None else 0.0,
+    )
+
+
+def _kimi_chat_completions(prompt: str, *, config: _KimiConfig) -> str:
+    url = f"{config.base_url}/chat/completions"
+    payload: Dict[str, Any] = {
+        "model": config.model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": config.temperature,
+    }
+    if config.max_tokens is not None:
+        payload["max_tokens"] = int(config.max_tokens)
+
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    headers = {
+        "Authorization": f"Bearer {config.api_key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "CodeArXiv/0.1",
+    }
+
+    try:
+        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=config.timeout_s) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        err_body = ""
+        try:
+            err_body = e.read().decode("utf-8", "replace").strip()
+        except Exception:
+            err_body = ""
+        raise RuntimeError(f"Kimi HTTP {e.code} for {url}: {err_body or e.reason}") from None
+    except Exception as e:  # noqa: BLE001 - surface minimal error
+        raise RuntimeError(f"Kimi request failed for {url}: {e}") from None
+
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError:
+        raise RuntimeError(f"Kimi returned non-JSON response: {raw[:2000]!r}") from None
+
+    if isinstance(obj, dict) and isinstance(obj.get("error"), dict):
+        err = obj["error"]
+        msg = err.get("message") or err.get("type") or str(err)
+        raise RuntimeError(f"Kimi API error: {msg}")
+
+    if not isinstance(obj, dict):
+        raise RuntimeError("Kimi response is not a JSON object.")
+    choices = obj.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise RuntimeError("Kimi response missing choices.")
+    first = choices[0]
+    if not isinstance(first, dict):
+        raise RuntimeError("Kimi response choices[0] is not an object.")
+    message = first.get("message")
+    if not isinstance(message, dict):
+        raise RuntimeError("Kimi response missing choices[0].message.")
+    content = message.get("content")
+    if not isinstance(content, str):
+        raise RuntimeError("Kimi response missing choices[0].message.content.")
+    return content
+
+
+def _llm_exec(
+    *,
+    backend: str,
+    prompt: str,
+    model: Optional[str],
+    reasoning_effort: str,
+    reasoning_summary: str,
+    timeout_s: int,
+) -> str:
+    if backend == "codex":
+        tmp_path = Path(f".codex_last_message.{os.getpid()}.txt")
+        try:
+            cmd = _build_codex_exec_cmd(
+                model=model,
+                reasoning_effort=reasoning_effort,
+                reasoning_summary=reasoning_summary,
+                tmp_path=tmp_path,
+            )
+
+            subprocess.run(
+                cmd,
+                input=prompt,
+                text=True,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=timeout_s,
+            )
+
+            return tmp_path.read_text(encoding="utf-8", errors="replace")
+        finally:
+            try:
+                tmp_path.unlink(missing_ok=True)  # type: ignore[arg-type]
+            except Exception:
+                pass
+
+    if backend == "kimi":
+        kimi_cfg = _load_kimi_config_from_env(model=model, timeout_s=timeout_s)
+        return _kimi_chat_completions(prompt, config=kimi_cfg)
+
+    raise ValueError(f"Unknown backend: {backend!r}")
+
+
 def _codex_translate_and_summarize(
     *,
     title_en: str,
     abstract_en: str,
+    backend: str,
     model: Optional[str],
     reasoning_effort: str,
     reasoning_summary: str,
@@ -192,44 +368,29 @@ def _codex_translate_and_summarize(
         "{\"title_zh\":\"...\",\"abstract_zh\":\"...\",\"summary_zh\":\"...\",\"summary_en\":\"...\"}\\n"
     )
 
-    tmp_path = Path(f".codex_last_message.{os.getpid()}.txt")
-    try:
-        cmd = _build_codex_exec_cmd(
-            model=model,
-            reasoning_effort=reasoning_effort,
-            reasoning_summary=reasoning_summary,
-            tmp_path=tmp_path,
-        )
+    raw = _llm_exec(
+        backend=backend,
+        prompt=prompt,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        reasoning_summary=reasoning_summary,
+        timeout_s=timeout_s,
+    )
 
-        subprocess.run(
-            cmd,
-            input=prompt,
-            text=True,
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=timeout_s,
-        )
-
-        raw = tmp_path.read_text(encoding="utf-8", errors="replace")
-        obj = _extract_json_object(raw)
-        title_zh = str(obj.get("title_zh", "")).strip()
-        abstract_zh = str(obj.get("abstract_zh", "")).strip()
-        summary_zh = str(obj.get("summary_zh", "")).strip()
-        summary_en = str(obj.get("summary_en", "")).strip()
-        if not (title_zh and abstract_zh and summary_zh and summary_en):
-            raise ValueError("Codex output missing required fields.")
-        return title_zh, abstract_zh, summary_zh, summary_en
-    finally:
-        try:
-            tmp_path.unlink(missing_ok=True)  # type: ignore[arg-type]
-        except Exception:
-            pass
+    obj = _extract_json_object(raw)
+    title_zh = str(obj.get("title_zh", "")).strip()
+    abstract_zh = str(obj.get("abstract_zh", "")).strip()
+    summary_zh = str(obj.get("summary_zh", "")).strip()
+    summary_en = str(obj.get("summary_en", "")).strip()
+    if not (title_zh and abstract_zh and summary_zh and summary_en):
+        raise ValueError("LLM output missing required fields.")
+    return title_zh, abstract_zh, summary_zh, summary_en
 
 
 def _codex_translate_and_summarize_batch(
     *,
     items: Dict[str, Dict[str, str]],
+    backend: str,
     model: Optional[str],
     reasoning_effort: str,
     reasoning_summary: str,
@@ -265,55 +426,40 @@ def _codex_translate_and_summarize_batch(
         "{\"2512.00001\":{\"title_zh\":\"...\",\"abstract_zh\":\"...\",\"summary_zh\":\"...\",\"summary_en\":\"...\"}}\\n"
     )
 
-    tmp_path = Path(f".codex_last_message.{os.getpid()}.txt")
-    try:
-        cmd = _build_codex_exec_cmd(
-            model=model,
-            reasoning_effort=reasoning_effort,
-            reasoning_summary=reasoning_summary,
-            tmp_path=tmp_path,
-        )
+    raw = _llm_exec(
+        backend=backend,
+        prompt=prompt,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        reasoning_summary=reasoning_summary,
+        timeout_s=timeout_s,
+    )
 
-        subprocess.run(
-            cmd,
-            input=prompt,
-            text=True,
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=timeout_s,
-        )
-
-        raw = tmp_path.read_text(encoding="utf-8", errors="replace")
-        obj = _extract_json_object(raw)
-        out: Dict[str, Dict[str, str]] = {}
-        for arxiv_id in items.keys():
-            v = obj.get(arxiv_id)
-            if not isinstance(v, dict):
-                continue
-            title_zh = str(v.get("title_zh", "")).strip()
-            abstract_zh = str(v.get("abstract_zh", "")).strip()
-            summary_zh = str(v.get("summary_zh", "")).strip()
-            summary_en = str(v.get("summary_en", "")).strip()
-            if title_zh and abstract_zh and summary_zh and summary_en:
-                out[arxiv_id] = {
-                    "title_zh": title_zh,
-                    "abstract_zh": abstract_zh,
-                    "summary_zh": summary_zh,
-                    "summary_en": summary_en,
-                }
-        return out
-    finally:
-        try:
-            tmp_path.unlink(missing_ok=True)  # type: ignore[arg-type]
-        except Exception:
-            pass
+    obj = _extract_json_object(raw)
+    out: Dict[str, Dict[str, str]] = {}
+    for arxiv_id in items.keys():
+        v = obj.get(arxiv_id)
+        if not isinstance(v, dict):
+            continue
+        title_zh = str(v.get("title_zh", "")).strip()
+        abstract_zh = str(v.get("abstract_zh", "")).strip()
+        summary_zh = str(v.get("summary_zh", "")).strip()
+        summary_en = str(v.get("summary_en", "")).strip()
+        if title_zh and abstract_zh and summary_zh and summary_en:
+            out[arxiv_id] = {
+                "title_zh": title_zh,
+                "abstract_zh": abstract_zh,
+                "summary_zh": summary_zh,
+                "summary_en": summary_en,
+            }
+    return out
 
 
 def _codex_tag_batch(
     *,
     items: Dict[str, Dict[str, str]],
     tag_prompt: str,
+    backend: str,
     model: Optional[str],
     reasoning_effort: str,
     reasoning_summary: str,
@@ -343,50 +489,35 @@ def _codex_tag_batch(
         "{\"2512.00001\":{\"task\":[],\"method\":[],\"property\":[],\"special\":[]}}\n"
     )
 
-    tmp_path = Path(f".codex_last_message.{os.getpid()}.txt")
-    try:
-        cmd = _build_codex_exec_cmd(
-            model=model,
-            reasoning_effort=reasoning_effort,
-            reasoning_summary=reasoning_summary,
-            tmp_path=tmp_path,
-        )
+    raw = _llm_exec(
+        backend=backend,
+        prompt=prompt,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        reasoning_summary=reasoning_summary,
+        timeout_s=timeout_s,
+    )
 
-        subprocess.run(
-            cmd,
-            input=prompt,
-            text=True,
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=timeout_s,
-        )
+    obj = _extract_json_object(raw)
+    out: Dict[str, Dict[str, list[str]]] = {}
 
-        raw = tmp_path.read_text(encoding="utf-8", errors="replace")
-        obj = _extract_json_object(raw)
-        out: Dict[str, Dict[str, list[str]]] = {}
-
-        if len(items) == 1 and all(k in obj for k in TAG_KEYS):
-            only_id = next(iter(items.keys()))
-            out[only_id] = _parse_tag_payload(obj)
-            return out
-
-        for arxiv_id in items.keys():
-            v = obj.get(arxiv_id)
-            if not isinstance(v, dict):
-                continue
-            out[arxiv_id] = _parse_tag_payload(v)
+    if len(items) == 1 and all(k in obj for k in TAG_KEYS):
+        only_id = next(iter(items.keys()))
+        out[only_id] = _parse_tag_payload(obj)
         return out
-    finally:
-        try:
-            tmp_path.unlink(missing_ok=True)  # type: ignore[arg-type]
-        except Exception:
-            pass
+
+    for arxiv_id in items.keys():
+        v = obj.get(arxiv_id)
+        if not isinstance(v, dict):
+            continue
+        out[arxiv_id] = _parse_tag_payload(v)
+    return out
 
 
 def main() -> int:
     load_dotenv()
-    default_model = _env_str("CODEX_MODEL")
+    raw_backend = (os.getenv("LLM_PROVIDER") or os.getenv("CODEX_BACKEND") or "").strip().lower()
+    default_backend = raw_backend if raw_backend in ("codex", "kimi") else "codex"
     default_batch_size = max(1, _env_int("CODEX_BATCH_SIZE", 5))
     default_timeout = max(1, _env_int("CODEX_TIMEOUT", 300))
     default_sleep = max(0.0, _env_float("CODEX_SLEEP", 0.2))
@@ -396,8 +527,16 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(
         description=(
-            "Fill title_zh/abstract_zh/summary_zh/summary_en and tags in results JSON via Codex (LLM)."
+            "Fill title_zh/abstract_zh/summary_zh/summary_en and tags in results JSON via an LLM (Codex CLI or Kimi Code)."
         )
+    )
+    parser.add_argument(
+        "--backend",
+        type=str,
+        default=default_backend,
+        choices=("codex", "kimi"),
+        help="LLM provider: codex (Codex CLI) or kimi (Kimi Code OpenAI-Compatible API). "
+        "Default: LLM_PROVIDER or CODEX_BACKEND or codex.",
     )
     parser.add_argument(
         "--input",
@@ -437,8 +576,9 @@ def main() -> int:
     parser.add_argument(
         "--model",
         type=str,
-        default=default_model,
-        help="Codex model name (default: Codex CLI default).",
+        default=None,
+        help="Model name. codex: defaults to CODEX_MODEL (or Codex CLI default). "
+        "kimi: defaults to KIMI_MODEL (or kimi-for-coding).",
     )
     parser.add_argument(
         "--reasoning-effort",
@@ -466,6 +606,10 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    backend = str(args.backend or "").strip().lower() or "codex"
+    model: Optional[str] = (str(args.model).strip() if args.model else None) or None
+    if backend == "codex" and not model:
+        model = _env_str("CODEX_MODEL")
     input_path: Path = args.input or _pick_latest_results_path(RESULTS_DIR)
     data: Dict[str, Dict[str, Any]] = json.loads(input_path.read_text(encoding="utf-8"))
     tag_prompt = None if args.skip_tags else _load_tag_prompt(args.tag_prompt)
@@ -507,7 +651,8 @@ def main() -> int:
             try:
                 out_map = _codex_translate_and_summarize_batch(
                     items=items,
-                    model=args.model,
+                    backend=backend,
+                    model=model,
                     reasoning_effort=str(args.reasoning_effort),
                     reasoning_summary=str(args.reasoning_summary),
                     timeout_s=args.timeout,
@@ -516,25 +661,25 @@ def main() -> int:
                     entry = data.get(arxiv_id) or {}
                     out = out_map.get(arxiv_id)
                     if not out:
-                        entry.setdefault("errors", {})["codex_fill_zh"] = "Missing arxiv_id in Codex output."
+                        entry.setdefault("errors", {})["codex_fill_zh"] = "Missing arxiv_id in LLM output."
                         data[arxiv_id] = entry
                         continue
 
                     changed = False
-                    updated_by_codex = False
+                    updated_by_llm = False
 
                     if args.overwrite or not (entry.get("title_zh") or "").strip():
                         entry["title_zh"] = out["title_zh"]
                         changed = True
-                        updated_by_codex = True
+                        updated_by_llm = True
                     if args.overwrite or not (entry.get("abstract_zh") or "").strip():
                         entry["abstract_zh"] = out["abstract_zh"]
                         changed = True
-                        updated_by_codex = True
+                        updated_by_llm = True
                     if args.overwrite or not (entry.get("summary_zh") or "").strip():
                         entry["summary_zh"] = out["summary_zh"]
                         changed = True
-                        updated_by_codex = True
+                        updated_by_llm = True
                     if args.overwrite or not (entry.get("summary_en") or "").strip():
                         entry["summary_en"] = out["summary_en"]
                         changed = True
@@ -546,8 +691,9 @@ def main() -> int:
                         entry["summary_generated"] = True
                         changed = True
 
-                    if updated_by_codex and entry.get("translation_backend") != "codex":
-                        entry["translation_backend"] = "codex"
+                    backend_name = "codex" if backend == "codex" else backend
+                    if updated_by_llm and entry.get("translation_backend") != backend_name:
+                        entry["translation_backend"] = backend_name
                         changed = True
 
                     entry.setdefault("errors", {}).pop("codex_fill_zh", None)
@@ -589,7 +735,8 @@ def main() -> int:
                     out_map = _codex_tag_batch(
                         items=tag_items,
                         tag_prompt=tag_prompt,
-                        model=args.model,
+                        backend=backend,
+                        model=model,
                         reasoning_effort=str(args.reasoning_effort),
                         reasoning_summary=str(args.reasoning_summary),
                         timeout_s=args.timeout,
@@ -598,7 +745,7 @@ def main() -> int:
                         entry = data.get(arxiv_id) or {}
                         out = out_map.get(arxiv_id)
                         if not out:
-                            entry.setdefault("errors", {})["codex_tag"] = "Missing arxiv_id in Codex output."
+                            entry.setdefault("errors", {})["codex_tag"] = "Missing arxiv_id in LLM output."
                             data[arxiv_id] = entry
                             continue
 

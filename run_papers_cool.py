@@ -205,16 +205,18 @@ def _fill_missing_from_papers_cool(entry: Dict[str, Any], cool: Dict[str, Any]) 
 def main(argv: Optional[List[str]] = None) -> int:
     load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
     daily.configure_data_paths()
-    default_codex_model = _env_str("CODEX_MODEL")
     default_codex_batch_size = max(1, _env_int("CODEX_BATCH_SIZE", 5))
     default_codex_timeout = max(1, _env_int("CODEX_TIMEOUT", 300))
     default_codex_sleep = max(0.0, _env_float("CODEX_SLEEP", 0.2))
     default_codex_overwrite = _env_bool("CODEX_OVERWRITE", False)
 
+    raw_provider = (os.getenv("LLM_PROVIDER") or os.getenv("CODEX_BACKEND") or "").strip().lower()
+    default_llm_provider = raw_provider if raw_provider in ("codex", "kimi") else None
+
     parser = argparse.ArgumentParser(
         description=(
             "Fetch a specified list date from papers.cool, then reuse run_daily.py's arXiv metadata fetch, "
-            "thumbnail generation, and (optional) Codex JSON fill."
+            "thumbnail generation, and (optional) LLM JSON fill."
         )
     )
     parser.add_argument("--date", required=True, help="List date (YYYY-MM-DD).")
@@ -255,7 +257,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--skip-codex",
         action="store_true",
-        help="Skip running codex_fill_zh.py after metadata is fetched.",
+        help="Skip running codex_fill_zh.py (LLM fill) after metadata is fetched.",
     )
     parser.add_argument(
         "--codex-fill",
@@ -264,10 +266,19 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Path to codex_fill_zh.py (used after metadata is fetched).",
     )
     parser.add_argument(
+        "--llm-provider",
+        dest="llm_provider",
+        type=str,
+        default=default_llm_provider,
+        choices=("codex", "kimi"),
+        help="LLM provider used by codex_fill_zh.py: codex or kimi (default: LLM_PROVIDER).",
+    )
+    parser.add_argument(
         "--codex-model",
         type=str,
-        default=default_codex_model,
-        help="Forwarded to codex_fill_zh.py --model (default: CODEX_MODEL).",
+        default=None,
+        help="Forwarded to codex_fill_zh.py --model. If omitted, codex_fill_zh.py uses CODEX_MODEL (backend=codex) "
+        "or KIMI_MODEL (backend=kimi).",
     )
     parser.add_argument(
         "--codex-batch-size",

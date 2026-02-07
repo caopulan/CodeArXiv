@@ -106,6 +106,8 @@ def _run_one_cycle(args: argparse.Namespace) -> bool:
     if args.skip_codex:
         cmd.append("--skip-codex")
     cmd += ["--codex-fill", str(codex_fill_path)]
+    if args.llm_provider:
+        cmd += ["--llm-provider", str(args.llm_provider)]
     if args.codex_model:
         cmd += ["--codex-model", str(args.codex_model)]
     if args.codex_batch_size:
@@ -125,7 +127,8 @@ def _run_one_cycle(args: argparse.Namespace) -> bool:
 
 def main() -> int:
     load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
-    default_codex_model = _env_str("CODEX_MODEL")
+    raw_provider = (os.getenv("LLM_PROVIDER") or os.getenv("CODEX_BACKEND") or "").strip().lower()
+    default_llm_provider = raw_provider if raw_provider in ("codex", "kimi") else None
     default_codex_batch_size = max(1, _env_int("CODEX_BATCH_SIZE", 5))
     default_codex_timeout = max(1, _env_int("CODEX_TIMEOUT", 300))
     default_codex_sleep = max(0.0, _env_float("CODEX_SLEEP", 0.2))
@@ -172,7 +175,7 @@ def main() -> int:
     parser.add_argument(
         "--skip-codex",
         action="store_true",
-        help="Skip running codex fill (only run list/metadata + thumbnails).",
+        help="Skip running LLM fill (only run list/metadata + thumbnails).",
     )
 
     parser.add_argument(
@@ -195,8 +198,17 @@ def main() -> int:
     parser.add_argument(
         "--codex-model",
         type=str,
-        default=default_codex_model,
-        help="Forwarded to run_daily.py --codex-model (default: CODEX_MODEL).",
+        default=None,
+        help="Forwarded to run_daily.py --codex-model. If omitted, run_daily/codex_fill_zh choose based on env vars "
+        "(CODEX_MODEL for backend=codex; KIMI_MODEL for backend=kimi).",
+    )
+    parser.add_argument(
+        "--llm-provider",
+        dest="llm_provider",
+        type=str,
+        default=default_llm_provider,
+        choices=("codex", "kimi"),
+        help="Forwarded to run_daily.py --llm-provider (default: LLM_PROVIDER).",
     )
     parser.add_argument(
         "--codex-batch-size",
