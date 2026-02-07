@@ -41,6 +41,15 @@ def get_favorite(db_conn, favorite_id: int):
     )
 
 
+def get_favorite_for_user(db_conn, user_id: int, favorite_id: int):
+    return (
+        db_conn.execute(
+            "SELECT id, name, embedding FROM Favorites WHERE id = ? AND user_id = ?",
+            (favorite_id, user_id),
+        ).fetchone()
+    )
+
+
 def ensure_favorite(user_id: int, name: str) -> int:
     db_conn = db.get_db()
     existing = (

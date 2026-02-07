@@ -28,6 +28,7 @@
           <p class="text-muted small">No favorites yet.</p>
         {% endif %}
         <form method="post" action="{{ url_for('feed.create_favorite') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <div class="mb-2">
             <label for="favName" class="form-label">New folder</label>
             <input class="form-control" id="favName" name="name" placeholder="e.g. RL papers">
@@ -43,11 +44,13 @@
       <div>
         {% if selected %}
           <form class="rename-form d-flex align-items-center gap-2" method="post" action="{{ url_for('feed.rename_favorite', favorite_id=selected['id']) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input class="rename-input" type="text" name="name" value="{{ selected['name'] }}" title="Click to edit name, press Enter to save">
             <span class="rename-hint text-muted small">{{ lang_copy.rename_hint }}</span>
           </form>
           <p class="text-muted small mb-0">ID: {{ selected['id'] }}</p>
           <form class="mt-2" method="post" action="{{ url_for('feed.delete_favorite', favorite_id=selected['id']) }}" onsubmit="return confirm('Delete this folder and its saved papers links?');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn btn-sm btn-outline-danger" type="submit">Delete folder</button>
           </form>
         {% else %}
@@ -80,6 +83,7 @@
               <div class="mt-auto d-flex justify-content-between align-items-center">
                 <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('feed.paper_detail', paper_id=paper.id) }}">Details</a>
                 <form method="post" action="{{ url_for('feed.remove_from_favorite', favorite_id=selected['id']) }}">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                   <input type="hidden" name="paper_id" value="{{ paper.id }}">
                   <button class="btn btn-sm btn-link text-danger" type="submit">Remove</button>
                 </form>

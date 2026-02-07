@@ -10,12 +10,13 @@
 </div>
 
 <div class="card shadow-sm border-0 settings-card floating-card">
-  <div class="card-body">
-    <form method="post" class="row g-4">
-      <div class="col-12">
-        <h6 class="text-muted mb-2">{{ lang_copy.language_label }}</h6>
-        <p class="text-muted small mb-2">{{ lang_copy.language_helper }}</p>
-        <div class="segmented-toggle d-inline-flex gap-2">
+    <div class="card-body">
+      <form method="post" class="row g-4">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="col-12">
+          <h6 class="text-muted mb-2">{{ lang_copy.language_label }}</h6>
+          <p class="text-muted small mb-2">{{ lang_copy.language_helper }}</p>
+          <div class="segmented-toggle d-inline-flex gap-2">
           <input type="radio" class="btn-check" name="language_preference" id="langEn" value="en" {% if current_language == 'en' %}checked{% endif %}>
           <label class="btn" for="langEn">{{ lang_copy.language_option_en }}</label>
           <input type="radio" class="btn-check" name="language_preference" id="langZh" value="zh" {% if current_language == 'zh' %}checked{% endif %}>

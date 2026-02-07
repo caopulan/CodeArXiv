@@ -21,6 +21,7 @@ from flask import (
 
 from .auth import login_required
 from .db import get_db
+from .security import safe_redirect_target
 from .services import favorites as favorites_service
 from .services import paper_store, recommendations
 
@@ -301,15 +302,23 @@ def _strip_images_if_missing(papers: list[Dict[str, Any]], target_date: dt.date)
     if images_dir.exists():
         return papers
     for paper in papers:
-        paper["thumb_small_url"] = None
-        paper["thumb_full_url"] = None
-        paper["image_url"] = None
+        image_path = paper.get("image_path")
+        if isinstance(image_path, str) and image_path.strip().lower().startswith(("http://", "https://")):
+            continue
+        # Only strip date-scoped data images; keep static assets intact.
+        path_obj = Path(str(image_path or ""))
+        if path_obj.parts and path_obj.parts[0] == "images":
+            paper["thumb_small_url"] = None
+            paper["thumb_full_url"] = None
+            paper["image_url"] = None
     return papers
 
 
 def _normalize_image_path(raw_path: Optional[str]) -> Optional[str]:
     if not raw_path:
         return None
+    if str(raw_path).strip().lower().startswith(("http://", "https://")):
+        return str(raw_path).strip()
     path_obj = Path(str(raw_path))
     parts = path_obj.parts
     if "static" in parts:
@@ -337,6 +346,8 @@ def _data_dir() -> Path:
 def _build_image_url(rel_path: Optional[str]) -> Optional[str]:
     if not rel_path:
         return None
+    if str(rel_path).strip().lower().startswith(("http://", "https://")):
+        return str(rel_path).strip()
     static_dir = Path(current_app.root_path) / "static"
     data_dir = _data_dir()
     path_obj = Path(rel_path)
@@ -387,6 +398,9 @@ def _resolve_thumb_variants(image_path: Optional[str]) -> tuple[Optional[str], O
     """Return (small_variant, full_variant) relative paths (static or data dir)."""
     if not image_path:
         return None, None
+    if str(image_path).strip().lower().startswith(("http://", "https://")):
+        url = str(image_path).strip()
+        return url, url
     full_rel = image_path
     small_rel = _make_variant_path(image_path, suffix="_small")
     static_dir = Path(current_app.root_path) / "static"
@@ -811,7 +825,9 @@ def data_image(path: str):
         data_root = data_dir.resolve()
     except FileNotFoundError:
         abort(404)
-    if not str(full_path).startswith(str(data_root)):
+    try:
+        full_path.relative_to(data_root)
+    except ValueError:
         abort(404)
     if not full_path.exists():
         abort(404)
@@ -930,7 +946,7 @@ def favorites():
     favorite_id = request.args.get("favorite_id", type=int)
     selected = None
     if favorite_id:
-        selected = favorites_service.get_favorite(db_conn, favorite_id)
+        selected = favorites_service.get_favorite_for_user(db_conn, g.user["id"], favorite_id)
         if selected is None:
             flash("Favorite not found.", "warning")
     if selected is None:
@@ -986,14 +1002,14 @@ def create_favorite():
         if wants_json:
             return jsonify({"error": "Please provide a folder name."}), 400
         flash("Please provide a folder name.", "warning")
-        return redirect(return_to or url_for("feed.favorites"))
+        return redirect(safe_redirect_target(return_to, url_for("feed.favorites")))
     fav_id = favorites_service.ensure_favorite(g.user["id"], name)
     _append_sim_favorite(g.user["id"], fav_id)
     session["last_created_fav"] = fav_id
     if wants_json:
         return jsonify({"id": fav_id, "name": name, "status": "ok"})
     flash("Favorite created.", "success")
-    return redirect(return_to or url_for("feed.favorites"))
+    return redirect(safe_redirect_target(return_to, url_for("feed.favorites")))
 
 
 @bp.route("/favorites/add", methods=["POST"])
@@ -1132,7 +1148,10 @@ def rename_favorite(favorite_id: int):
 def save_history():
     payload = request.get_json(silent=True) or {}
     paper_id = payload.get("paper_id")
-    position = int(payload.get("position", 0))
+    try:
+        position = int(payload.get("position", 0))
+    except (TypeError, ValueError):
+        position = 0
     date_str = payload.get("date") or dt.date.today().isoformat()
     if not paper_id:
         return {"status": "ignored"}, 400

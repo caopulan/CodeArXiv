@@ -1,4 +1,5 @@
 import os
+import secrets
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -8,6 +9,7 @@ from . import auth
 from . import cli as cli_commands
 from . import db
 from . import feed
+from . import security
 
 
 def create_app(test_config=None):
@@ -25,8 +27,10 @@ def create_app(test_config=None):
         data_dir_env = data_dir_env.resolve()
     no_auth_env = os.getenv("NO_AUTH_MODE", "false").lower()
     no_auth_mode = no_auth_env in ("1", "true", "yes", "on")
+    # Avoid a hard-coded default secret key; encourage setting FLASK_SECRET_KEY in .env.
+    secret_key = (os.getenv("FLASK_SECRET_KEY") or "").strip() or secrets.token_hex(32)
     app.config.from_mapping(
-        SECRET_KEY=os.getenv("FLASK_SECRET_KEY", "dev-secret-key"),
+        SECRET_KEY=secret_key,
         DATABASE=os.getenv("DATABASE_PATH", str(default_db_path)),
         PAPERS_DATA_DIR=str(data_dir_env),
         NO_AUTH_MODE=no_auth_mode,
@@ -47,6 +51,14 @@ def create_app(test_config=None):
     # Apply lightweight migrations (adds optional columns if missing)
     with app.app_context():
         db.apply_light_migrations()
+
+    @app.before_request
+    def csrf_protect():
+        security.verify_csrf()
+
+    @app.context_processor
+    def inject_csrf_token():
+        return {"csrf_token": security.get_csrf_token()}
 
     @app.route("/health")
     def health():

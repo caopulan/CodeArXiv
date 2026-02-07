@@ -14,6 +14,7 @@ from flask import (
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from .db import get_db
+from .security import safe_redirect_target
 
 bp = Blueprint("auth", __name__, url_prefix="/auth")
 
@@ -179,7 +180,7 @@ def login():
             session["user_id"] = user["id"]
             flash("Welcome back!", "success")
             next_url = request.args.get("next")
-            return redirect(next_url or url_for("feed.index"))
+            return redirect(safe_redirect_target(next_url, url_for("feed.index")))
 
         flash(error, "danger")
 

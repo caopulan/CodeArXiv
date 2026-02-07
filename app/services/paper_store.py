@@ -11,6 +11,8 @@ either:
 import datetime as dt
 import json
 import re
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
@@ -25,6 +27,12 @@ IMAGE_PATH_KEYS = (
     "thumbnail_100_path",
 )
 
+_INDEX_LOCK = threading.Lock()
+_PAPER_INDEX: dict[str, tuple[dt.date, Dict[str, Any]]] = {}
+_INDEX_SIGNATURE: tuple[int, int] | None = None
+_SIG_CHECKED_AT_NS = 0
+_SIG_CHECK_INTERVAL_NS = 2_000_000_000  # 2s
+
 
 def _data_dir() -> Path:
     base_cfg = (current_app.config.get("PAPERS_DATA_DIR", "CodeArXiv-data") or "").strip()
@@ -35,6 +43,47 @@ def _data_dir() -> Path:
         base = base.resolve()
     base.mkdir(parents=True, exist_ok=True)
     return base
+
+
+def _json_dir_signature(data_dir: Path) -> tuple[int, int]:
+    """Return (json_file_count, newest_mtime_ns) for simple index invalidation."""
+    count = 0
+    newest = 0
+    for path in data_dir.iterdir():
+        if not path.is_file() or path.suffix.lower() != ".json":
+            continue
+        count += 1
+        try:
+            newest = max(newest, path.stat().st_mtime_ns)
+        except OSError:
+            continue
+    return count, newest
+
+
+def _ensure_index() -> None:
+    """Build an in-memory paper_id -> (date, paper) index to speed up lookups."""
+    global _INDEX_SIGNATURE, _SIG_CHECKED_AT_NS
+
+    data_dir = _data_dir()
+    now = time.monotonic_ns()
+    with _INDEX_LOCK:
+        if _INDEX_SIGNATURE is not None and (now - _SIG_CHECKED_AT_NS) < _SIG_CHECK_INTERVAL_NS:
+            return
+
+        signature = _json_dir_signature(data_dir)
+        _SIG_CHECKED_AT_NS = now
+        if _INDEX_SIGNATURE == signature and _PAPER_INDEX:
+            return
+
+        _PAPER_INDEX.clear()
+        # Prefer newest copies by iterating newest-first.
+        for date_val in reversed(list_dates()):
+            for paper in load_date(date_val, with_images=False):
+                pid = str(paper.get("id") or "").strip()
+                if not pid or pid in _PAPER_INDEX:
+                    continue
+                _PAPER_INDEX[pid] = (date_val, paper)
+        _INDEX_SIGNATURE = signature
 
 
 def _is_url(value: str) -> bool:
@@ -302,9 +351,16 @@ def merge_papers(date_val: Union[dt.date, str], new_papers: Iterable[Dict[str, A
 def find_by_id(paper_id: str) -> Tuple[Optional[Dict[str, Any]], Optional[dt.date]]:
     """Search all date files (newest first) for a paper id."""
     pid = str(paper_id).strip()
-    for date_val in reversed(list_dates()):
-        items = load_date(date_val, with_images=False)
-        for paper in items:
-            if paper.get("id") == pid:
-                return _attach_images(date_val.isoformat(), [paper])[0], date_val
+    if not pid:
+        return None, None
+
+    _ensure_index()
+    with _INDEX_LOCK:
+        hit = _PAPER_INDEX.get(pid)
+    if hit is None:
+        return None, None
+
+    date_val, paper = hit
+    paper_copy = dict(paper)
+    return _attach_images(date_val.isoformat(), [paper_copy])[0], date_val
     return None, None

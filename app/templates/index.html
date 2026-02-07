@@ -83,6 +83,7 @@
 <script>
   (() => {
     const copy = {{ lang_copy|tojson }};
+    const csrfToken = {{ csrf_token|tojson }};
     let overlay = document.querySelector('.thumb-overlay');
     let imgEl;
     let scale = 1;
@@ -175,6 +176,7 @@
           <div class="modal-body">
             <form id="favForm" class="d-flex flex-column gap-3">
               <input type="hidden" name="paper_id" id="favPaperId" value="">
+              <input type="hidden" name="csrf_token" value="${csrfToken}">
               <div id="favList" class="fav-list-scroll text-muted small">${copy.modal_loading}</div>
               <div class="fav-actions">
                 <div class="mb-3">
@@ -268,10 +270,27 @@
             const simVal = typeof f.similarity === 'number' ? f.similarity : parseFloat(f.similarity);
             if (f.has_paper) alreadyIn = true;
             const shouldCheck = f.has_paper || f.is_top || preserved.has(String(f.id));
-            const simLabel = Number.isFinite(simVal) ? ` <span class="text-muted small">(${simVal.toFixed(2)})</span>` : '';
             const item = document.createElement('div');
             item.className = 'form-check';
-            item.innerHTML = `<input class="form-check-input" type="checkbox" name="favorite_ids" value="${f.id}" id="${id}" ${shouldCheck ? 'checked' : ''}><label class="form-check-label" for="${id}">${f.name}${simLabel}</label>`;
+            const checkbox = document.createElement('input');
+            checkbox.className = 'form-check-input';
+            checkbox.type = 'checkbox';
+            checkbox.name = 'favorite_ids';
+            checkbox.value = String(f.id);
+            checkbox.id = id;
+            checkbox.checked = Boolean(shouldCheck);
+            const label = document.createElement('label');
+            label.className = 'form-check-label';
+            label.htmlFor = id;
+            label.append(document.createTextNode(String(f.name ?? '')));
+            if (Number.isFinite(simVal)) {
+              const simSpan = document.createElement('span');
+              simSpan.className = 'text-muted small';
+              simSpan.textContent = `(${simVal.toFixed(2)})`;
+              label.append(' ', simSpan);
+            }
+            item.appendChild(checkbox);
+            item.appendChild(label);
             list.appendChild(item);
           });
         } else {
@@ -301,6 +320,7 @@
           headers: {
             'Accept': 'application/json',
             'X-Requested-With': 'XMLHttpRequest',
+            'X-CSRFToken': csrfToken,
           },
           body: formData,
         }).then(res => {
@@ -336,8 +356,9 @@
               'Content-Type': 'application/x-www-form-urlencoded',
               'Accept': 'application/json',
               'X-Requested-With': 'XMLHttpRequest',
+              'X-CSRFToken': csrfToken,
             },
-            body: new URLSearchParams({ name })
+            body: new URLSearchParams({ name, csrf_token: csrfToken })
           }).then(res => {
             if (!res.ok) throw new Error();
             return res.json().catch(() => ({}));
@@ -407,8 +428,8 @@
         if (!lastSeen) return;
         fetch({{ url_for('feed.save_history')|tojson }}, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ paper_id: lastSeen, position: window.scrollY, date: targetDate })
+          headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+          body: JSON.stringify({ paper_id: lastSeen, position: window.scrollY, date: targetDate, csrf_token: csrfToken })
         }).catch(() => {});
       }, 800);
     }

@@ -8,6 +8,7 @@
         <h2 class="h4 mb-3">Welcome back</h2>
         <p class="text-muted">Sign in to browse today’s arXiv drops.</p>
         <form method="post">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <div class="mb-3">
             <label for="username" class="form-label">Username</label>
             <input name="username" id="username" class="form-control" required>
