@@ -6,6 +6,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -25,6 +26,67 @@ TAG_KEYS = ("task", "method", "property", "special")
 
 def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def _one_line(s: str) -> str:
+    return " ".join((s or "").strip().split())
+
+
+def _safe_filename_part(value: str, *, fallback: str = "x", max_len: int = 80) -> str:
+    v = (value or "").strip()
+    if not v:
+        v = fallback
+    v = re.sub(r"[^A-Za-z0-9._-]+", "_", v)
+    v = v.strip("._-") or fallback
+    return v[:max_len]
+
+
+def _get_llm_debug_dump_dir() -> Optional[Path]:
+    raw = (os.getenv("LLM_DEBUG_DUMP_DIR") or "").strip()
+    if not raw:
+        return None
+    raw = os.path.expandvars(os.path.expanduser(raw)).strip()
+    if not raw:
+        return None
+    p = Path(raw)
+    if not p.is_absolute():
+        p = (Path.cwd() / p).resolve()
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _dump_llm_debug(
+    *,
+    label: str,
+    prompt: str,
+    raw: Optional[str],
+    meta: Dict[str, Any],
+    error: Optional[str] = None,
+) -> None:
+    dump_dir = _get_llm_debug_dump_dir()
+    if dump_dir is None:
+        return
+
+    rid = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{os.getpid()}_{time.time_ns()}"
+    safe_label = _safe_filename_part(label, fallback="llm")
+    prefix = dump_dir / f"{safe_label}.{rid}"
+
+    meta_out = dict(meta)
+    if error:
+        meta_out["error"] = _one_line(error)
+    meta_out.setdefault("dumped_at", _now_iso())
+
+    try:
+        (prefix.with_suffix(".meta.json")).write_text(
+            json.dumps(meta_out, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        (prefix.with_suffix(".prompt.txt")).write_text(prompt, encoding="utf-8")
+        if raw is not None:
+            (prefix.with_suffix(".raw.txt")).write_text(raw, encoding="utf-8")
+    except Exception:
+        # Debug dumping must never crash the main pipeline.
+        pass
 
 
 def _json_dump_atomic(data: Any, path: Path) -> None:
@@ -51,23 +113,66 @@ def _pick_latest_results_path(results_dir: Path) -> Path:
     return candidates[0][1]
 
 
-def _extract_json_object(text: str) -> Dict[str, Any]:
-    text = text.strip()
-    try:
-        obj = json.loads(text)
-        if isinstance(obj, dict):
-            return obj
-    except json.JSONDecodeError:
-        pass
+def _strip_markdown_code_fences(text: str) -> str:
+    s = (text or "").strip()
+    if not s.startswith("```"):
+        return s
+    # Handle ```json ... ``` (and variants); keep it intentionally conservative.
+    m = re.match(r"^```[A-Za-z0-9_-]*\\s*\\n(?P<body>.*)\\n```\\s*$", s, flags=re.DOTALL)
+    if m:
+        return (m.group("body") or "").strip()
+    return s
 
-    # Best-effort fallback: extract the first {...} block.
-    m = re.search(r"\\{.*\\}", text, flags=re.DOTALL)
-    if not m:
-        raise ValueError("No JSON object found in LLM output.")
-    obj = json.loads(m.group(0))
-    if not isinstance(obj, dict):
-        raise ValueError("LLM output JSON is not an object.")
-    return obj
+
+def _extract_json_object(text: str) -> Dict[str, Any]:
+    """
+    Extract the first JSON object from an LLM response.
+
+    The model may wrap JSON in Markdown fences or add surrounding text; this extractor
+    tries hard to recover a dict without relying on a greedy regex.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        raise ValueError("Empty LLM output.")
+
+    candidates = [raw, _strip_markdown_code_fences(raw)]
+    decoder = json.JSONDecoder()
+
+    for s in candidates:
+        s = (s or "").strip()
+        if not s:
+            continue
+        try:
+            obj = json.loads(s)
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
+
+        # Scan for the first parseable JSON object anywhere in the text.
+        idx = 0
+        while True:
+            start = s.find("{", idx)
+            if start < 0:
+                break
+            try:
+                parsed, _end = decoder.raw_decode(s[start:])
+            except json.JSONDecodeError:
+                idx = start + 1
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+            idx = start + 1
+
+        # Provide a clearer truncation hint when we saw an opening brace but no closer.
+        first = s.find("{")
+        if first >= 0 and "}" not in s[first:]:
+            raise ValueError(
+                "LLM output seems truncated (found '{' but no '}' to close a JSON object). "
+                "Try reducing batch size or increasing LLM_MAX_OUTPUT_TOKENS."
+            )
+
+    raise ValueError("No JSON object found in LLM output.")
 
 
 def _load_tag_prompt(path: Path) -> str:
@@ -389,16 +494,52 @@ def _codex_translate_and_summarize(
         "{\"title_zh\":\"...\",\"abstract_zh\":\"...\",\"summary_zh\":\"...\",\"summary_en\":\"...\"}\\n"
     )
 
-    raw = _llm_exec(
-        backend=backend,
-        prompt=prompt,
-        model=model,
-        reasoning_effort=reasoning_effort,
-        reasoning_summary=reasoning_summary,
-        timeout_s=timeout_s,
-    )
+    try:
+        raw = _llm_exec(
+            backend=backend,
+            prompt=prompt,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            reasoning_summary=reasoning_summary,
+            timeout_s=timeout_s,
+        )
+    except Exception as e:  # noqa: BLE001
+        _dump_llm_debug(
+            label="translate.single.exec_error",
+            prompt=prompt,
+            raw=None,
+            meta={
+                "backend": backend,
+                "model": model,
+                "timeout_s": timeout_s,
+                "reasoning_effort": reasoning_effort,
+                "reasoning_summary": reasoning_summary,
+                "title_en_chars": len(title_en or ""),
+                "abstract_en_chars": len(abstract_en or ""),
+            },
+            error=str(e),
+        )
+        raise
 
-    obj = _extract_json_object(raw)
+    try:
+        obj = _extract_json_object(raw)
+    except Exception as e:  # noqa: BLE001
+        _dump_llm_debug(
+            label="translate.single.parse_error",
+            prompt=prompt,
+            raw=raw,
+            meta={
+                "backend": backend,
+                "model": model,
+                "timeout_s": timeout_s,
+                "reasoning_effort": reasoning_effort,
+                "reasoning_summary": reasoning_summary,
+                "title_en_chars": len(title_en or ""),
+                "abstract_en_chars": len(abstract_en or ""),
+            },
+            error=str(e),
+        )
+        raise
     title_zh = str(obj.get("title_zh", "")).strip()
     abstract_zh = str(obj.get("abstract_zh", "")).strip()
     summary_zh = str(obj.get("summary_zh", "")).strip()
@@ -447,16 +588,52 @@ def _codex_translate_and_summarize_batch(
         "{\"2512.00001\":{\"title_zh\":\"...\",\"abstract_zh\":\"...\",\"summary_zh\":\"...\",\"summary_en\":\"...\"}}\\n"
     )
 
-    raw = _llm_exec(
-        backend=backend,
-        prompt=prompt,
-        model=model,
-        reasoning_effort=reasoning_effort,
-        reasoning_summary=reasoning_summary,
-        timeout_s=timeout_s,
-    )
+    try:
+        raw = _llm_exec(
+            backend=backend,
+            prompt=prompt,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            reasoning_summary=reasoning_summary,
+            timeout_s=timeout_s,
+        )
+    except Exception as e:  # noqa: BLE001
+        _dump_llm_debug(
+            label="translate.batch.exec_error",
+            prompt=prompt,
+            raw=None,
+            meta={
+                "backend": backend,
+                "model": model,
+                "timeout_s": timeout_s,
+                "reasoning_effort": reasoning_effort,
+                "reasoning_summary": reasoning_summary,
+                "items_count": len(items),
+                "arxiv_ids": list(items.keys()),
+            },
+            error=str(e),
+        )
+        raise
 
-    obj = _extract_json_object(raw)
+    try:
+        obj = _extract_json_object(raw)
+    except Exception as e:  # noqa: BLE001
+        _dump_llm_debug(
+            label="translate.batch.parse_error",
+            prompt=prompt,
+            raw=raw,
+            meta={
+                "backend": backend,
+                "model": model,
+                "timeout_s": timeout_s,
+                "reasoning_effort": reasoning_effort,
+                "reasoning_summary": reasoning_summary,
+                "items_count": len(items),
+                "arxiv_ids": list(items.keys()),
+            },
+            error=str(e),
+        )
+        raise
     out: Dict[str, Dict[str, str]] = {}
     for arxiv_id in items.keys():
         v = obj.get(arxiv_id)
@@ -510,16 +687,52 @@ def _codex_tag_batch(
         "{\"2512.00001\":{\"task\":[],\"method\":[],\"property\":[],\"special\":[]}}\n"
     )
 
-    raw = _llm_exec(
-        backend=backend,
-        prompt=prompt,
-        model=model,
-        reasoning_effort=reasoning_effort,
-        reasoning_summary=reasoning_summary,
-        timeout_s=timeout_s,
-    )
+    try:
+        raw = _llm_exec(
+            backend=backend,
+            prompt=prompt,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            reasoning_summary=reasoning_summary,
+            timeout_s=timeout_s,
+        )
+    except Exception as e:  # noqa: BLE001
+        _dump_llm_debug(
+            label="tag.batch.exec_error",
+            prompt=prompt,
+            raw=None,
+            meta={
+                "backend": backend,
+                "model": model,
+                "timeout_s": timeout_s,
+                "reasoning_effort": reasoning_effort,
+                "reasoning_summary": reasoning_summary,
+                "items_count": len(items),
+                "arxiv_ids": list(items.keys()),
+            },
+            error=str(e),
+        )
+        raise
 
-    obj = _extract_json_object(raw)
+    try:
+        obj = _extract_json_object(raw)
+    except Exception as e:  # noqa: BLE001
+        _dump_llm_debug(
+            label="tag.batch.parse_error",
+            prompt=prompt,
+            raw=raw,
+            meta={
+                "backend": backend,
+                "model": model,
+                "timeout_s": timeout_s,
+                "reasoning_effort": reasoning_effort,
+                "reasoning_summary": reasoning_summary,
+                "items_count": len(items),
+                "arxiv_ids": list(items.keys()),
+            },
+            error=str(e),
+        )
+        raise
     out: Dict[str, Dict[str, list[str]]] = {}
 
     if len(items) == 1 and all(k in obj for k in TAG_KEYS):
@@ -533,6 +746,221 @@ def _codex_tag_batch(
             continue
         out[arxiv_id] = _parse_tag_payload(v)
     return out
+
+
+def _split_dict_in_half(items: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    keys = list(items.keys())
+    if len(keys) <= 1:
+        return dict(items), {}
+    mid = max(1, len(keys) // 2)
+    left = {k: items[k] for k in keys[:mid]}
+    right = {k: items[k] for k in keys[mid:]}
+    return left, right
+
+
+def _translate_and_summarize_resilient(
+    *,
+    items: Dict[str, Dict[str, str]],
+    backend: str,
+    model: Optional[str],
+    reasoning_effort: str,
+    reasoning_summary: str,
+    timeout_s: int,
+    retry_missing_attempts: int = 1,
+) -> Tuple[Dict[str, Dict[str, str]], Dict[str, str]]:
+    if not items:
+        return {}, {}
+
+    # For a single item, use the single-item prompt (often more robust than batch).
+    if len(items) == 1:
+        arxiv_id = next(iter(items.keys()))
+        v = items[arxiv_id]
+        try:
+            title_zh, abstract_zh, summary_zh, summary_en = _codex_translate_and_summarize(
+                title_en=str(v.get("title_en") or ""),
+                abstract_en=str(v.get("abstract_en") or ""),
+                backend=backend,
+                model=model,
+                reasoning_effort=reasoning_effort,
+                reasoning_summary=reasoning_summary,
+                timeout_s=timeout_s,
+            )
+            return (
+                {
+                    arxiv_id: {
+                        "title_zh": title_zh,
+                        "abstract_zh": abstract_zh,
+                        "summary_zh": summary_zh,
+                        "summary_en": summary_en,
+                    }
+                },
+                {},
+            )
+        except Exception as e:  # noqa: BLE001
+            return {}, {arxiv_id: _one_line(str(e))}
+
+    try:
+        out = _codex_translate_and_summarize_batch(
+            items=items,
+            backend=backend,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            reasoning_summary=reasoning_summary,
+            timeout_s=timeout_s,
+        )
+    except Exception as e:  # noqa: BLE001
+        msg = _one_line(str(e))
+        print(
+            f"[codex_fill_zh] translate batch failed (n={len(items)}): {msg} -> splitting",
+            file=sys.stderr,
+            flush=True,
+        )
+        left, right = _split_dict_in_half(items)
+        out_l, err_l = _translate_and_summarize_resilient(
+            items=left,
+            backend=backend,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            reasoning_summary=reasoning_summary,
+            timeout_s=timeout_s,
+            retry_missing_attempts=retry_missing_attempts,
+        )
+        out_r, err_r = _translate_and_summarize_resilient(
+            items=right,
+            backend=backend,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            reasoning_summary=reasoning_summary,
+            timeout_s=timeout_s,
+            retry_missing_attempts=retry_missing_attempts,
+        )
+        merged_out = dict(out_l)
+        merged_out.update(out_r)
+        merged_err = dict(err_l)
+        merged_err.update(err_r)
+        return merged_out, merged_err
+
+    errors: Dict[str, str] = {}
+    missing = [k for k in items.keys() if k not in out]
+    if missing and retry_missing_attempts > 0:
+        missing_items = {k: items[k] for k in missing}
+        retry_out, retry_err = _translate_and_summarize_resilient(
+            items=missing_items,
+            backend=backend,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            reasoning_summary=reasoning_summary,
+            timeout_s=timeout_s,
+            retry_missing_attempts=retry_missing_attempts - 1,
+        )
+        out.update(retry_out)
+        errors.update(retry_err)
+        missing = [k for k in items.keys() if k not in out]
+
+    for k in missing:
+        errors.setdefault(k, "Missing arxiv_id in LLM output.")
+
+    return out, errors
+
+
+def _tag_batch_resilient(
+    *,
+    items: Dict[str, Dict[str, str]],
+    tag_prompt: str,
+    backend: str,
+    model: Optional[str],
+    reasoning_effort: str,
+    reasoning_summary: str,
+    timeout_s: int,
+    retry_missing_attempts: int = 1,
+) -> Tuple[Dict[str, Dict[str, list[str]]], Dict[str, str]]:
+    if not items:
+        return {}, {}
+
+    if len(items) == 1:
+        arxiv_id = next(iter(items.keys()))
+        try:
+            out = _codex_tag_batch(
+                items=items,
+                tag_prompt=tag_prompt,
+                backend=backend,
+                model=model,
+                reasoning_effort=reasoning_effort,
+                reasoning_summary=reasoning_summary,
+                timeout_s=timeout_s,
+            )
+            if arxiv_id not in out:
+                return {}, {arxiv_id: "Missing arxiv_id in LLM output."}
+            return out, {}
+        except Exception as e:  # noqa: BLE001
+            return {}, {arxiv_id: _one_line(str(e))}
+
+    try:
+        out = _codex_tag_batch(
+            items=items,
+            tag_prompt=tag_prompt,
+            backend=backend,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            reasoning_summary=reasoning_summary,
+            timeout_s=timeout_s,
+        )
+    except Exception as e:  # noqa: BLE001
+        msg = _one_line(str(e))
+        print(
+            f"[codex_fill_zh] tag batch failed (n={len(items)}): {msg} -> splitting",
+            file=sys.stderr,
+            flush=True,
+        )
+        left, right = _split_dict_in_half(items)
+        out_l, err_l = _tag_batch_resilient(
+            items=left,
+            tag_prompt=tag_prompt,
+            backend=backend,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            reasoning_summary=reasoning_summary,
+            timeout_s=timeout_s,
+            retry_missing_attempts=retry_missing_attempts,
+        )
+        out_r, err_r = _tag_batch_resilient(
+            items=right,
+            tag_prompt=tag_prompt,
+            backend=backend,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            reasoning_summary=reasoning_summary,
+            timeout_s=timeout_s,
+            retry_missing_attempts=retry_missing_attempts,
+        )
+        merged_out = dict(out_l)
+        merged_out.update(out_r)
+        merged_err = dict(err_l)
+        merged_err.update(err_r)
+        return merged_out, merged_err
+
+    errors: Dict[str, str] = {}
+    missing = [k for k in items.keys() if k not in out]
+    if missing and retry_missing_attempts > 0:
+        missing_items = {k: items[k] for k in missing}
+        retry_out, retry_err = _tag_batch_resilient(
+            items=missing_items,
+            tag_prompt=tag_prompt,
+            backend=backend,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            reasoning_summary=reasoning_summary,
+            timeout_s=timeout_s,
+            retry_missing_attempts=retry_missing_attempts - 1,
+        )
+        out.update(retry_out)
+        errors.update(retry_err)
+        missing = [k for k in items.keys() if k not in out]
+
+    for k in missing:
+        errors.setdefault(k, "Missing arxiv_id in LLM output.")
+
+    return out, errors
 
 
 def main() -> int:
@@ -670,66 +1098,62 @@ def main() -> int:
             items[arxiv_id] = {"title_en": title_en, "abstract_en": abstract_en}
 
         if items:
-            try:
-                out_map = _codex_translate_and_summarize_batch(
-                    items=items,
-                    backend=backend,
-                    model=model,
-                    reasoning_effort=str(args.reasoning_effort),
-                    reasoning_summary=str(args.reasoning_summary),
-                    timeout_s=args.timeout,
-                )
-                for arxiv_id in items.keys():
-                    entry = data.get(arxiv_id) or {}
-                    out = out_map.get(arxiv_id)
-                    if not out:
-                        entry.setdefault("errors", {})["codex_fill_zh"] = "Missing arxiv_id in LLM output."
-                        data[arxiv_id] = entry
-                        continue
-
-                    changed = False
-                    updated_by_llm = False
-
-                    if args.overwrite or not (entry.get("title_zh") or "").strip():
-                        entry["title_zh"] = out["title_zh"]
-                        changed = True
-                        updated_by_llm = True
-                    if args.overwrite or not (entry.get("abstract_zh") or "").strip():
-                        entry["abstract_zh"] = out["abstract_zh"]
-                        changed = True
-                        updated_by_llm = True
-                    if args.overwrite or not (entry.get("summary_zh") or "").strip():
-                        entry["summary_zh"] = out["summary_zh"]
-                        changed = True
-                        updated_by_llm = True
-                    if args.overwrite or not (entry.get("summary_en") or "").strip():
-                        entry["summary_en"] = out["summary_en"]
-                        changed = True
-
-                    if entry.get("title_zh") and entry.get("abstract_zh") and entry.get("translated") is not True:
-                        entry["translated"] = True
-                        changed = True
-                    if entry.get("summary_zh") and entry.get("summary_generated") is not True:
-                        entry["summary_generated"] = True
-                        changed = True
-
-                    backend_name = "codex" if backend == "codex" else backend
-                    if updated_by_llm and entry.get("translation_backend") != backend_name:
-                        entry["translation_backend"] = backend_name
-                        changed = True
-
-                    entry.setdefault("errors", {}).pop("codex_fill_zh", None)
-                    if changed:
-                        entry["updated_at"] = _now_iso()
-                        if arxiv_id not in processed_ids:
-                            processed_ids.add(arxiv_id)
-                            processed += 1
+            out_map, err_map = _translate_and_summarize_resilient(
+                items=items,
+                backend=backend,
+                model=model,
+                reasoning_effort=str(args.reasoning_effort),
+                reasoning_summary=str(args.reasoning_summary),
+                timeout_s=args.timeout,
+            )
+            for arxiv_id in items.keys():
+                entry = data.get(arxiv_id) or {}
+                out = out_map.get(arxiv_id)
+                if not out:
+                    entry.setdefault("errors", {})["codex_fill_zh"] = err_map.get(
+                        arxiv_id, "Missing arxiv_id in LLM output."
+                    )
                     data[arxiv_id] = entry
-            except Exception as e:  # noqa: BLE001
-                for arxiv_id in items.keys():
-                    entry = data.get(arxiv_id) or {}
-                    entry.setdefault("errors", {})["codex_fill_zh"] = str(e)
-                    data[arxiv_id] = entry
+                    continue
+
+                changed = False
+                updated_by_llm = False
+
+                if args.overwrite or not (entry.get("title_zh") or "").strip():
+                    entry["title_zh"] = out["title_zh"]
+                    changed = True
+                    updated_by_llm = True
+                if args.overwrite or not (entry.get("abstract_zh") or "").strip():
+                    entry["abstract_zh"] = out["abstract_zh"]
+                    changed = True
+                    updated_by_llm = True
+                if args.overwrite or not (entry.get("summary_zh") or "").strip():
+                    entry["summary_zh"] = out["summary_zh"]
+                    changed = True
+                    updated_by_llm = True
+                if args.overwrite or not (entry.get("summary_en") or "").strip():
+                    entry["summary_en"] = out["summary_en"]
+                    changed = True
+
+                if entry.get("title_zh") and entry.get("abstract_zh") and entry.get("translated") is not True:
+                    entry["translated"] = True
+                    changed = True
+                if entry.get("summary_zh") and entry.get("summary_generated") is not True:
+                    entry["summary_generated"] = True
+                    changed = True
+
+                backend_name = "codex" if backend == "codex" else backend
+                if updated_by_llm and entry.get("translation_backend") != backend_name:
+                    entry["translation_backend"] = backend_name
+                    changed = True
+
+                entry.setdefault("errors", {}).pop("codex_fill_zh", None)
+                if changed:
+                    entry["updated_at"] = _now_iso()
+                    if arxiv_id not in processed_ids:
+                        processed_ids.add(arxiv_id)
+                        processed += 1
+                data[arxiv_id] = entry
 
             _json_dump_atomic(data, input_path)
 
@@ -753,47 +1177,43 @@ def main() -> int:
                 tag_items[arxiv_id] = {"title": title, "abstract": abstract}
 
             if tag_items:
-                try:
-                    out_map = _codex_tag_batch(
-                        items=tag_items,
-                        tag_prompt=tag_prompt,
-                        backend=backend,
-                        model=model,
-                        reasoning_effort=str(args.reasoning_effort),
-                        reasoning_summary=str(args.reasoning_summary),
-                        timeout_s=args.timeout,
-                    )
-                    for arxiv_id in tag_items.keys():
-                        entry = data.get(arxiv_id) or {}
-                        out = out_map.get(arxiv_id)
-                        if not out:
-                            entry.setdefault("errors", {})["codex_tag"] = "Missing arxiv_id in LLM output."
-                            data[arxiv_id] = entry
-                            continue
+                out_map, err_map = _tag_batch_resilient(
+                    items=tag_items,
+                    tag_prompt=tag_prompt,
+                    backend=backend,
+                    model=model,
+                    reasoning_effort=str(args.reasoning_effort),
+                    reasoning_summary=str(args.reasoning_summary),
+                    timeout_s=args.timeout,
+                )
+                for arxiv_id in tag_items.keys():
+                    entry = data.get(arxiv_id) or {}
+                    out = out_map.get(arxiv_id)
+                    if not out:
+                        entry.setdefault("errors", {})["codex_tag"] = err_map.get(
+                            arxiv_id, "Missing arxiv_id in LLM output."
+                        )
+                        data[arxiv_id] = entry
+                        continue
 
-                        merged_tags = _flatten_tag_payload(out)
-                        existing_tags = _normalize_tag_list(entry.get("tags"))
-                        changed = False
-                        if args.overwrite or not existing_tags:
-                            if merged_tags != existing_tags:
-                                entry["tags"] = merged_tags
-                                changed = True
-                        if entry.get("tags_generated") is not True:
-                            entry["tags_generated"] = True
+                    merged_tags = _flatten_tag_payload(out)
+                    existing_tags = _normalize_tag_list(entry.get("tags"))
+                    changed = False
+                    if args.overwrite or not existing_tags:
+                        if merged_tags != existing_tags:
+                            entry["tags"] = merged_tags
                             changed = True
+                    if entry.get("tags_generated") is not True:
+                        entry["tags_generated"] = True
+                        changed = True
 
-                        entry.setdefault("errors", {}).pop("codex_tag", None)
-                        if changed:
-                            entry["updated_at"] = _now_iso()
-                            if arxiv_id not in processed_ids:
-                                processed_ids.add(arxiv_id)
-                                processed += 1
-                        data[arxiv_id] = entry
-                except Exception as e:  # noqa: BLE001
-                    for arxiv_id in tag_items.keys():
-                        entry = data.get(arxiv_id) or {}
-                        entry.setdefault("errors", {})["codex_tag"] = str(e)
-                        data[arxiv_id] = entry
+                    entry.setdefault("errors", {}).pop("codex_tag", None)
+                    if changed:
+                        entry["updated_at"] = _now_iso()
+                        if arxiv_id not in processed_ids:
+                            processed_ids.add(arxiv_id)
+                            processed += 1
+                    data[arxiv_id] = entry
 
                 _json_dump_atomic(data, input_path)
 
