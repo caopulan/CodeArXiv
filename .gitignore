@@ -10,5 +10,6 @@ app/static/thumbnails/
 .DS_Store
 .idea/
 CodeArXiv-data/
+output/
 AGENTS.md
 TODO.md
