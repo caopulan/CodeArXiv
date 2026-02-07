@@ -829,7 +829,8 @@ def index():
                 "paper_id": saved_filters.get("last_paper_id"),
                 "position": saved_filters.get("last_position") or 0,
             }
-        if not history_row and last_history_row and last_history_row.get("date"):
+        # sqlite3.Row supports subscription (row["col"]) but not dict-style .get(...)
+        if not history_row and last_history_row and last_history_row["date"]:
             last_history_date = _parse_date_value(last_history_row["date"])
             if last_history_date == target_date:
                 history_row = last_history_row
