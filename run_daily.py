@@ -832,7 +832,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     default_codex_overwrite = _env_bool("CODEX_OVERWRITE", False)
 
     raw_provider = (os.getenv("LLM_PROVIDER") or os.getenv("CODEX_BACKEND") or "").strip().lower()
-    default_llm_provider = raw_provider if raw_provider in ("codex", "kimi") else None
+    default_llm_provider = raw_provider if raw_provider in ("codex", "api", "kimi") else None
 
     parser = argparse.ArgumentParser(
         description=(
@@ -871,8 +871,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         dest="llm_provider",
         type=str,
         default=default_llm_provider,
-        choices=("codex", "kimi"),
-        help="LLM provider used by codex_fill_zh.py: codex or kimi (default: LLM_PROVIDER).",
+        choices=("codex", "api", "kimi"),
+        help="LLM provider used by codex_fill_zh.py: codex (Codex CLI) or api (OpenAI-compatible HTTP API). "
+        "kimi is kept as an alias of api for compatibility (default: LLM_PROVIDER).",
     )
     parser.add_argument(
         "--codex-model",

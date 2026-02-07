@@ -8,6 +8,7 @@ import re
 import subprocess
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
@@ -20,8 +21,6 @@ from dotenv import load_dotenv
 RESULTS_DIR = Path("results")
 TAG_PROMPT_PATH = Path(__file__).resolve().parent / "tag_prompt.md"
 TAG_KEYS = ("task", "method", "property", "special")
-DEFAULT_KIMI_BASE_URL = "https://api.kimi.com/coding/v1"
-DEFAULT_KIMI_MODEL = "kimi-for-coding"
 
 
 def _now_iso() -> str:
@@ -173,7 +172,7 @@ def _build_codex_exec_cmd(
 
 
 @dataclass(frozen=True)
-class _KimiConfig:
+class _ApiConfig:
     base_url: str
     api_key: str
     model: str
@@ -202,45 +201,67 @@ def _env_float_opt(name: str) -> Optional[float]:
         return None
 
 
-def _load_kimi_config_from_env(
+def _normalize_openai_compat_base_url(raw: str) -> str:
+    value = (raw or "").strip()
+    if not value:
+        return ""
+
+    value = os.path.expandvars(value).strip()
+    parsed = urllib.parse.urlparse(value)
+    if not parsed.scheme:
+        value = f"https://{value}"
+        parsed = urllib.parse.urlparse(value)
+
+    # Most OpenAI-compatible endpoints live under /v1; append if caller passed only the host.
+    path = (parsed.path or "").rstrip("/")
+    if not path:
+        value = value.rstrip("/") + "/v1"
+    return value.rstrip("/")
+
+
+def _load_api_config_from_env(
     *,
     model: Optional[str],
     timeout_s: int,
     base_url: Optional[str] = None,
-) -> _KimiConfig:
-    api_key = (os.getenv("KIMI_API_KEY") or "").strip()
+) -> _ApiConfig:
+    api_key = (os.getenv("LLM_API_KEY") or "").strip() or (os.getenv("KIMI_API_KEY") or "").strip()
     if api_key:
         api_key = os.path.expandvars(api_key).strip()
     if not api_key:
-        raise ValueError("Missing KIMI_API_KEY in environment for backend=kimi.")
+        raise ValueError("Missing LLM_API_KEY (or legacy KIMI_API_KEY) in environment for backend=api.")
 
-    raw_base = (base_url or os.getenv("KIMI_BASE_URL") or DEFAULT_KIMI_BASE_URL).strip()
-    if raw_base:
-        raw_base = os.path.expandvars(raw_base).strip()
-    base = raw_base.rstrip("/")
+    raw_base = (base_url or os.getenv("LLM_BASE_URL") or os.getenv("KIMI_BASE_URL") or "").strip()
+    base = _normalize_openai_compat_base_url(raw_base)
     if not base:
-        raise ValueError("Missing KIMI_BASE_URL (or empty after expandvars).")
+        raise ValueError("Missing LLM_BASE_URL (or legacy KIMI_BASE_URL) in environment for backend=api.")
 
-    kimi_model = (model or os.getenv("KIMI_MODEL") or DEFAULT_KIMI_MODEL).strip()
-    if kimi_model:
-        kimi_model = os.path.expandvars(kimi_model).strip()
-    if not kimi_model:
-        raise ValueError("Missing KIMI_MODEL (or empty after expandvars).")
+    model_name = (
+        (model or "").strip()
+        or (os.getenv("LLM_MODEL_NAME") or "").strip()
+        or (os.getenv("LLM_MODEL") or "").strip()
+        or (os.getenv("KIMI_MODEL") or "").strip()
+    )
+    model_name = os.path.expandvars(model_name).strip()
+    if not model_name:
+        raise ValueError(
+            "Missing LLM_MODEL_NAME (or LLM_MODEL / legacy KIMI_MODEL) in environment for backend=api."
+        )
 
-    max_tokens = _env_int_opt("KIMI_MAX_OUTPUT_TOKENS")
-    temperature = _env_float_opt("KIMI_TEMPERATURE")
+    max_tokens = _env_int_opt("LLM_MAX_OUTPUT_TOKENS") or _env_int_opt("KIMI_MAX_OUTPUT_TOKENS")
+    temperature = _env_float_opt("LLM_TEMPERATURE") or _env_float_opt("KIMI_TEMPERATURE")
 
-    return _KimiConfig(
+    return _ApiConfig(
         base_url=base,
         api_key=api_key,
-        model=kimi_model,
+        model=model_name,
         timeout_s=max(1, int(timeout_s)),
         max_tokens=max_tokens if (max_tokens is None or max_tokens > 0) else None,
         temperature=float(temperature) if temperature is not None else 0.0,
     )
 
 
-def _kimi_chat_completions(prompt: str, *, config: _KimiConfig) -> str:
+def _openai_compat_chat_completions(prompt: str, *, config: _ApiConfig) -> str:
     url = f"{config.base_url}/chat/completions"
     payload: Dict[str, Any] = {
         "model": config.model,
@@ -268,34 +289,34 @@ def _kimi_chat_completions(prompt: str, *, config: _KimiConfig) -> str:
             err_body = e.read().decode("utf-8", "replace").strip()
         except Exception:
             err_body = ""
-        raise RuntimeError(f"Kimi HTTP {e.code} for {url}: {err_body or e.reason}") from None
+        raise RuntimeError(f"HTTP {e.code} for {url}: {err_body or e.reason}") from None
     except Exception as e:  # noqa: BLE001 - surface minimal error
-        raise RuntimeError(f"Kimi request failed for {url}: {e}") from None
+        raise RuntimeError(f"Request failed for {url}: {e}") from None
 
     try:
         obj = json.loads(raw)
     except json.JSONDecodeError:
-        raise RuntimeError(f"Kimi returned non-JSON response: {raw[:2000]!r}") from None
+        raise RuntimeError(f"API returned non-JSON response: {raw[:2000]!r}") from None
 
     if isinstance(obj, dict) and isinstance(obj.get("error"), dict):
         err = obj["error"]
         msg = err.get("message") or err.get("type") or str(err)
-        raise RuntimeError(f"Kimi API error: {msg}")
+        raise RuntimeError(f"API error: {msg}")
 
     if not isinstance(obj, dict):
-        raise RuntimeError("Kimi response is not a JSON object.")
+        raise RuntimeError("API response is not a JSON object.")
     choices = obj.get("choices")
     if not isinstance(choices, list) or not choices:
-        raise RuntimeError("Kimi response missing choices.")
+        raise RuntimeError("API response missing choices.")
     first = choices[0]
     if not isinstance(first, dict):
-        raise RuntimeError("Kimi response choices[0] is not an object.")
+        raise RuntimeError("API response choices[0] is not an object.")
     message = first.get("message")
     if not isinstance(message, dict):
-        raise RuntimeError("Kimi response missing choices[0].message.")
+        raise RuntimeError("API response missing choices[0].message.")
     content = message.get("content")
     if not isinstance(content, str):
-        raise RuntimeError("Kimi response missing choices[0].message.content.")
+        raise RuntimeError("API response missing choices[0].message.content.")
     return content
 
 
@@ -335,9 +356,9 @@ def _llm_exec(
             except Exception:
                 pass
 
-    if backend == "kimi":
-        kimi_cfg = _load_kimi_config_from_env(model=model, timeout_s=timeout_s)
-        return _kimi_chat_completions(prompt, config=kimi_cfg)
+    if backend in ("api", "kimi"):
+        api_cfg = _load_api_config_from_env(model=model, timeout_s=timeout_s)
+        return _openai_compat_chat_completions(prompt, config=api_cfg)
 
     raise ValueError(f"Unknown backend: {backend!r}")
 
@@ -517,7 +538,7 @@ def _codex_tag_batch(
 def main() -> int:
     load_dotenv()
     raw_backend = (os.getenv("LLM_PROVIDER") or os.getenv("CODEX_BACKEND") or "").strip().lower()
-    default_backend = raw_backend if raw_backend in ("codex", "kimi") else "codex"
+    default_backend = raw_backend if raw_backend in ("codex", "api", "kimi") else "codex"
     default_batch_size = max(1, _env_int("CODEX_BATCH_SIZE", 5))
     default_timeout = max(1, _env_int("CODEX_TIMEOUT", 300))
     default_sleep = max(0.0, _env_float("CODEX_SLEEP", 0.2))
@@ -527,15 +548,16 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(
         description=(
-            "Fill title_zh/abstract_zh/summary_zh/summary_en and tags in results JSON via an LLM (Codex CLI or Kimi Code)."
+            "Fill title_zh/abstract_zh/summary_zh/summary_en and tags in results JSON via an LLM (Codex CLI or OpenAI-compatible API)."
         )
     )
     parser.add_argument(
         "--backend",
         type=str,
         default=default_backend,
-        choices=("codex", "kimi"),
-        help="LLM provider: codex (Codex CLI) or kimi (Kimi Code OpenAI-Compatible API). "
+        choices=("codex", "api", "kimi"),
+        help="LLM backend: codex (Codex CLI) or api (OpenAI-compatible HTTP API). "
+        "Note: kimi is kept as an alias of api for compatibility. "
         "Default: LLM_PROVIDER or CODEX_BACKEND or codex.",
     )
     parser.add_argument(

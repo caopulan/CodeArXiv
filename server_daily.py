@@ -128,7 +128,7 @@ def _run_one_cycle(args: argparse.Namespace) -> bool:
 def main() -> int:
     load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
     raw_provider = (os.getenv("LLM_PROVIDER") or os.getenv("CODEX_BACKEND") or "").strip().lower()
-    default_llm_provider = raw_provider if raw_provider in ("codex", "kimi") else None
+    default_llm_provider = raw_provider if raw_provider in ("codex", "api", "kimi") else None
     default_codex_batch_size = max(1, _env_int("CODEX_BATCH_SIZE", 5))
     default_codex_timeout = max(1, _env_int("CODEX_TIMEOUT", 300))
     default_codex_sleep = max(0.0, _env_float("CODEX_SLEEP", 0.2))
@@ -207,7 +207,7 @@ def main() -> int:
         dest="llm_provider",
         type=str,
         default=default_llm_provider,
-        choices=("codex", "kimi"),
+        choices=("codex", "api", "kimi"),
         help="Forwarded to run_daily.py --llm-provider (default: LLM_PROVIDER).",
     )
     parser.add_argument(
