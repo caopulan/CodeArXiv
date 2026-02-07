@@ -774,8 +774,10 @@ def index():
                 "paper_id": saved_filters.get("last_paper_id"),
                 "position": saved_filters.get("last_position") or 0,
             }
-        if not history_row:
-            history_row = last_history_row
+        if not history_row and last_history_row and last_history_row.get("date"):
+            last_history_date = _parse_date_value(last_history_row["date"])
+            if last_history_date == target_date:
+                history_row = last_history_row
 
     favorite_paper_ids = set()
     if g.user:
@@ -1156,12 +1158,14 @@ def save_history():
     if not paper_id:
         return {"status": "ignored"}, 400
     db_conn = get_db()
-    # Keep only the latest browsing record per user
-    db_conn.execute("DELETE FROM BrowsingHistory WHERE user_id = ?", (g.user["id"],))
+    # Persist last reading position per (user, date).
     db_conn.execute(
         """
         INSERT INTO BrowsingHistory (user_id, paper_id, date, position)
         VALUES (?, ?, ?, ?)
+        ON CONFLICT(user_id, date) DO UPDATE SET
+            paper_id = excluded.paper_id,
+            position = excluded.position
         """,
         (g.user["id"], paper_id, date_str, position),
     )
