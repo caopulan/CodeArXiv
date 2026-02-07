@@ -593,14 +593,14 @@ def main() -> int:
         "--batch-size",
         type=int,
         default=default_batch_size,
-        help="Batch size per Codex request (1 = per-paper).",
+        help="Batch size per LLM request (1 = per-paper).",
     )
     parser.add_argument(
         "--model",
         type=str,
         default=None,
         help="Model name. codex: defaults to CODEX_MODEL (or Codex CLI default). "
-        "kimi: defaults to KIMI_MODEL (or kimi-for-coding).",
+        "api/kimi: defaults to LLM_MODEL_NAME (or LLM_MODEL / legacy KIMI_MODEL).",
     )
     parser.add_argument(
         "--reasoning-effort",
