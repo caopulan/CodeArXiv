@@ -60,6 +60,24 @@ def _build_translate_prompt(*, title_en: str, abstract_en: str) -> str:
     )
 
 
+def _build_translate_batch_prompt(*, arxiv_id: str, title_en: str, abstract_en: str) -> str:
+    payload = [{"arxiv_id": arxiv_id, "title_en": title_en.strip(), "abstract_en": abstract_en.strip()}]
+    return (
+        "你是一个学术论文助手。请严格只输出 JSON（不要输出解释/Markdown/代码块）。\n"
+        "输出必须是一个 JSON 对象：key 为 arxiv_id，value 为包含 title_zh, abstract_zh, summary_zh, summary_en 的对象。\n"
+        "- title_zh：把 title_en 翻译成中文，保留必要的术语/缩写/方法名（可在中文中保留英文括号）。\n"
+        "- abstract_zh：把 abstract_en 尽量忠实完整地翻译成中文，保持原有段落结构，不要遗漏关键信息。\n"
+        "- summary_zh：用一句中文概述论文做了什么/贡献是什么（1 句，尽量以“提出/实现/构建/统一/证明/系统化”等动词开头，末尾用“。”）。\n"
+        "- summary_en：用一句英文概述论文做了什么/贡献是什么（1 sentence, English only, end with a period).\n"
+        "\n"
+        "输入 JSON：\n"
+        + json.dumps(payload, ensure_ascii=False)
+        + "\n\n"
+        "输出 JSON 示例：\n"
+        '{"2512.00001":{"title_zh":"...","abstract_zh":"...","summary_zh":"...","summary_en":"..."}}\n'
+    )
+
+
 def _build_tag_prompt(*, arxiv_id: str, title: str, abstract: str, tag_prompt: str) -> str:
     payload = [{"arxiv_id": arxiv_id, "title": title.strip(), "abstract": abstract.strip()}]
     return (
@@ -101,6 +119,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--model", type=str, default=None, help="Override model name for this run.")
     parser.add_argument("--timeout", type=int, default=60, help="Timeout seconds for the LLM call.")
     parser.add_argument("--mode", choices=("translate", "tag", "both"), default="translate", help="What to test.")
+    parser.add_argument(
+        "--translate-format",
+        choices=("single", "batch"),
+        default="batch",
+        help="Translate prompt format: single (expects {title_zh,...}) or batch (expects {arxiv_id:{...}}). "
+        "Batch matches the pipeline behavior.",
+    )
     parser.add_argument("--input-json", type=Path, default=None, help="Use the first entry from a results JSON file.")
     parser.add_argument("--arxiv-id", type=str, default=None, help="Pick a specific arxiv_id from --input-json.")
     parser.add_argument("--title-en", type=str, default=DEFAULT_SAMPLE_TITLE, help="Sample English title.")
@@ -162,7 +187,10 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.mode in ("translate", "both"):
         print("\n=== translate ===")
-        prompt = _build_translate_prompt(title_en=title_en, abstract_en=abstract_en)
+        if args.translate_format == "single":
+            prompt = _build_translate_prompt(title_en=title_en, abstract_en=abstract_en)
+        else:
+            prompt = _build_translate_batch_prompt(arxiv_id=arxiv_id, title_en=title_en, abstract_en=abstract_en)
         if args.print_prompt:
             print(prompt)
         if args.dump_dir:
@@ -177,14 +205,38 @@ def main(argv: Optional[list[str]] = None) -> int:
                     Path(args.dump_dir) / "translate.parsed.json",
                     json.dumps(parsed, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
                 )
-            missing = [k for k in ("title_zh", "abstract_zh", "summary_zh", "summary_en") if not str(parsed.get(k, "")).strip()]
-            if missing:
-                print(f"[translate] FAIL missing keys: {missing}", file=sys.stderr)
-                rc = 1
+
+            if args.translate_format == "single":
+                missing = [
+                    k
+                    for k in ("title_zh", "abstract_zh", "summary_zh", "summary_en")
+                    if not str(parsed.get(k, "")).strip()
+                ]
+                if missing:
+                    print(f"[translate] FAIL missing keys: {missing}", file=sys.stderr)
+                    rc = 1
+                else:
+                    print("[translate] OK")
+                    print(f"title_zh: {str(parsed.get('title_zh'))[:200]!r}")
+                    print(f"summary_en: {str(parsed.get('summary_en'))[:200]!r}")
             else:
-                print("[translate] OK")
-                print(f"title_zh: {str(parsed.get('title_zh'))[:200]!r}")
-                print(f"summary_en: {str(parsed.get('summary_en'))[:200]!r}")
+                entry = parsed.get(arxiv_id) if isinstance(parsed, dict) else None
+                if not isinstance(entry, dict):
+                    print("[translate] FAIL missing arxiv_id mapping in batch output", file=sys.stderr)
+                    rc = 1
+                else:
+                    missing = [
+                        k
+                        for k in ("title_zh", "abstract_zh", "summary_zh", "summary_en")
+                        if not str(entry.get(k, "")).strip()
+                    ]
+                    if missing:
+                        print(f"[translate] FAIL missing keys in batch entry: {missing}", file=sys.stderr)
+                        rc = 1
+                    else:
+                        print("[translate] OK")
+                        print(f"title_zh: {str(entry.get('title_zh'))[:200]!r}")
+                        print(f"summary_en: {str(entry.get('summary_en'))[:200]!r}")
         except Exception as e:  # noqa: BLE001 - debug script
             print(f"[translate] ERROR: {e}", file=sys.stderr)
             rc = 1
