@@ -1,5 +1,6 @@
 import os
 import secrets
+import datetime as dt
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -36,6 +37,22 @@ def create_app(test_config=None):
         NO_AUTH_MODE=no_auth_mode,
         DEFAULT_USER_USERNAME=os.getenv("DEFAULT_USER_USERNAME", "guest"),
         DEFAULT_USER_PASSWORD=os.getenv("DEFAULT_USER_PASSWORD", "guest"),
+        # Session hardening (keep defaults explicit; do not force Secure cookies on localhost HTTP).
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE=os.getenv("SESSION_COOKIE_SAMESITE", "Lax"),
+        SESSION_COOKIE_SECURE=(os.getenv("SESSION_COOKIE_SECURE", "false").lower() in ("1", "true", "yes", "on")),
+        PERMANENT_SESSION_LIFETIME=dt.timedelta(
+            days=int(os.getenv("SESSION_LIFETIME_DAYS", "7"))
+        ),
+        SESSION_REFRESH_EACH_REQUEST=True,
+        # Auth security
+        AUTH_MAX_FAILS=int(os.getenv("AUTH_MAX_FAILS", "10")),
+        AUTH_WINDOW_SECONDS=int(os.getenv("AUTH_WINDOW_SECONDS", "600")),
+        AUTH_BLOCK_SECONDS=int(os.getenv("AUTH_BLOCK_SECONDS", "300")),
+        AUTH_CLEANUP_SECONDS=int(os.getenv("AUTH_CLEANUP_SECONDS", str(60 * 60 * 24 * 7))),
+        TRUST_PROXY_HEADERS=(os.getenv("TRUST_PROXY_HEADERS", "false").lower() in ("1", "true", "yes", "on")),
+        MIN_PASSWORD_LENGTH=int(os.getenv("MIN_PASSWORD_LENGTH", "8")),
+        MAX_USERNAME_LENGTH=int(os.getenv("MAX_USERNAME_LENGTH", "64")),
     )
 
     if test_config:

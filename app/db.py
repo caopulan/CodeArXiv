@@ -111,6 +111,26 @@ def apply_light_migrations() -> None:
         )
     main_db.commit()
 
+    if not _table_exists(main_db, "AuthAttempts"):
+        main_db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS AuthAttempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT,
+                ip TEXT,
+                ts INTEGER NOT NULL,
+                success INTEGER NOT NULL
+            );
+            """
+        )
+        main_db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_auth_attempts_ip_ts ON AuthAttempts (ip, ts);"
+        )
+        main_db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_auth_attempts_user_ip_ts ON AuthAttempts (username, ip, ts);"
+        )
+        main_db.commit()
+
 
 @click.command("init-db")
 @with_appcontext

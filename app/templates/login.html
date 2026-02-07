@@ -11,11 +11,11 @@
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <div class="mb-3">
             <label for="username" class="form-label">Username</label>
-            <input name="username" id="username" class="form-control" required>
+            <input name="username" id="username" class="form-control" required autocomplete="username" maxlength="64">
           </div>
           <div class="mb-3">
             <label for="password" class="form-label">Password</label>
-            <input type="password" name="password" id="password" class="form-control" required>
+            <input type="password" name="password" id="password" class="form-control" required autocomplete="current-password" maxlength="256">
           </div>
           <button class="btn btn-primary w-100" type="submit">Log In</button>
         </form>

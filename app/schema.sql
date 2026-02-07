@@ -43,5 +43,15 @@ CREATE TABLE IF NOT EXISTS UserFilters (
     FOREIGN KEY (user_id) REFERENCES Users (id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS AuthAttempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT,
+    ip TEXT,
+    ts INTEGER NOT NULL,
+    success INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_favorites_user_id ON Favorites (user_id);
 CREATE INDEX IF NOT EXISTS idx_history_user_date ON BrowsingHistory (user_id, date);
+CREATE INDEX IF NOT EXISTS idx_auth_attempts_ip_ts ON AuthAttempts (ip, ts);
+CREATE INDEX IF NOT EXISTS idx_auth_attempts_user_ip_ts ON AuthAttempts (username, ip, ts);
