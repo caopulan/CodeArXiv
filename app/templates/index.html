@@ -425,9 +425,12 @@
     function scheduleSave() {
       clearTimeout(saveTimeout);
       saveTimeout = setTimeout(() => {
+        if (!csrfToken) return;
         if (!lastSeen) return;
         fetch({{ url_for('feed.save_history')|tojson }}, {
           method: 'POST',
+          credentials: 'same-origin',
+          keepalive: true,
           headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
           body: JSON.stringify({ paper_id: lastSeen, position: window.scrollY, date: targetDate, csrf_token: csrfToken })
         }).catch(() => {});
