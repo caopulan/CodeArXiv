@@ -120,6 +120,25 @@ def create_app(test_config=None):
     def inject_csrf_token():
         return {"csrf_token": security.get_csrf_token()}
 
+    @app.after_request
+    def no_cache_dynamic(response):
+        """
+        Prevent intermediate proxies from caching dynamic HTML/JSON, which can cause
+        "stuck" dates or old UI to appear on specific networks/devices.
+        """
+        endpoint = request.endpoint or ""
+        if endpoint == "static" or endpoint.startswith("static") or endpoint == "feed.data_image":
+            return response
+
+        response.headers.setdefault("Cache-Control", "no-store")
+        response.headers.setdefault("Pragma", "no-cache")
+        response.headers.setdefault("Expires", "0")
+        # If a shared cache is present, separate by session.
+        existing_vary = response.headers.get("Vary", "")
+        if "Cookie" not in existing_vary:
+            response.headers["Vary"] = (existing_vary + ", Cookie").strip(", ").strip()
+        return response
+
     @app.route("/health")
     def health():
         dates = paper_store.list_dates()
