@@ -130,10 +130,17 @@ def create_app(test_config=None):
         if endpoint == "static" or endpoint.startswith("static") or endpoint == "feed.data_image":
             return response
 
-        response.headers.setdefault("Cache-Control", "no-store")
-        response.headers.setdefault("Pragma", "no-cache")
-        response.headers.setdefault("Expires", "0")
+        # Force no-cache headers (setdefault isn't enough if upstream middleware sets something else).
+        response.headers["Cache-Control"] = "private, no-store, no-cache, max-age=0, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+
+        # Extra signals for CDNs that support surrogate directives.
+        response.headers["Surrogate-Control"] = "no-store"
+        response.headers["CDN-Cache-Control"] = "no-store"
+
         # If a shared cache is present, separate by session.
+        # Note: some CDNs (e.g. Tencent EdgeOne) require enabling Vary support explicitly.
         existing_vary = response.headers.get("Vary", "")
         if "Cookie" not in existing_vary:
             response.headers["Vary"] = (existing_vary + ", Cookie").strip(", ").strip()
@@ -141,44 +148,87 @@ def create_app(test_config=None):
 
     @app.route("/health")
     def health():
+        def _payload():
+            dates = paper_store.list_dates()
+            payload = {"status": "ok"}
+            # Lightweight diagnostics for debugging "session flapping"/routing issues.
+            payload["env"] = {
+                "no_auth_mode": bool(app.config.get("NO_AUTH_MODE")),
+                "session_cookie_name": app.config.get("SESSION_COOKIE_NAME"),
+                "papers_data_dir": app.config.get("PAPERS_DATA_DIR"),
+            }
+            payload["proc"] = {
+                "hostname": socket.gethostname(),
+                "pid": os.getpid(),
+            }
+            try:
+                fp = hashlib.sha256((app.config.get("SECRET_KEY") or "").encode("utf-8")).hexdigest()[:10]
+            except Exception:
+                fp = None
+            payload["secret_key"] = {"source": secret_source, "fp": fp}
+            try:
+                repo_root = Path(app.root_path).parent
+                if (repo_root / ".git").exists():
+                    sha = (
+                        subprocess.check_output(["git", "-C", str(repo_root), "rev-parse", "--short", "HEAD"])
+                        .decode("utf-8", "ignore")
+                        .strip()
+                    )
+                else:
+                    sha = None
+            except Exception:
+                sha = None
+            payload["build"] = {"git_sha": sha}
+            if dates:
+                payload["dates"] = {
+                    "count": len(dates),
+                    "min": dates[0].isoformat(),
+                    "max": dates[-1].isoformat(),
+                }
+            else:
+                payload["dates"] = {"count": 0, "min": None, "max": None}
+            return payload
+
+        return jsonify(_payload()), 200
+
+    @app.route("/healthz")
+    def healthz():
+        """Uncached health endpoint for debugging CDN/proxy caching."""
+        now = dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+        # Rebuild payload to avoid relying on cached /health behavior.
         dates = paper_store.list_dates()
-        payload = {"status": "ok"}
-        # Lightweight diagnostics for debugging "session flapping"/routing issues.
-        payload["env"] = {
-            "no_auth_mode": bool(app.config.get("NO_AUTH_MODE")),
-            "session_cookie_name": app.config.get("SESSION_COOKIE_NAME"),
-            "papers_data_dir": app.config.get("PAPERS_DATA_DIR"),
+        payload = {
+            "status": "ok",
+            "utc": now,
+            "env": {
+                "no_auth_mode": bool(app.config.get("NO_AUTH_MODE")),
+                "session_cookie_name": app.config.get("SESSION_COOKIE_NAME"),
+                "papers_data_dir": app.config.get("PAPERS_DATA_DIR"),
+            },
+            "proc": {"hostname": socket.gethostname(), "pid": os.getpid()},
+            "secret_key": {
+                "source": secret_source,
+                "fp": hashlib.sha256((app.config.get("SECRET_KEY") or "").encode("utf-8")).hexdigest()[:10]
+                if (app.config.get("SECRET_KEY") or "")
+                else None,
+            },
+            "build": {"git_sha": None},
+            "dates": {
+                "count": len(dates),
+                "min": dates[0].isoformat() if dates else None,
+                "max": dates[-1].isoformat() if dates else None,
+            },
         }
-        payload["proc"] = {
-            "hostname": socket.gethostname(),
-            "pid": os.getpid(),
-        }
-        try:
-            fp = hashlib.sha256((app.config.get("SECRET_KEY") or "").encode("utf-8")).hexdigest()[:10]
-        except Exception:
-            fp = None
-        payload["secret_key"] = {"source": secret_source, "fp": fp}
         try:
             repo_root = Path(app.root_path).parent
             if (repo_root / ".git").exists():
-                sha = (
+                payload["build"]["git_sha"] = (
                     subprocess.check_output(["git", "-C", str(repo_root), "rev-parse", "--short", "HEAD"])
                     .decode("utf-8", "ignore")
                     .strip()
                 )
-            else:
-                sha = None
         except Exception:
-            sha = None
-        payload["build"] = {"git_sha": sha}
-        if dates:
-            payload["dates"] = {
-                "count": len(dates),
-                "min": dates[0].isoformat(),
-                "max": dates[-1].isoformat(),
-            }
-        else:
-            payload["dates"] = {"count": 0, "min": None, "max": None}
+            pass
         return jsonify(payload), 200
 
     return app
