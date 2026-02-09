@@ -21,7 +21,7 @@ from .services import paper_store
 def create_app(test_config=None):
     """Application factory for the frontend-only paper viewer."""
     # Prefer the repo's .env over ambient environment variables to avoid
-    # surprising behavior across reloaders/workers (e.g. NO_AUTH_MODE toggling).
+    # surprising behavior across reloaders/workers.
     load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env", override=True)
     app = Flask(__name__, instance_relative_config=True)
 
@@ -33,8 +33,6 @@ def create_app(test_config=None):
         data_dir_env = (Path(app.root_path).parent / data_dir_env).resolve()
     else:
         data_dir_env = data_dir_env.resolve()
-    no_auth_env = os.getenv("NO_AUTH_MODE", "false").lower()
-    no_auth_mode = no_auth_env in ("1", "true", "yes", "on")
     # Session stability:
     # - Prefer an explicit FLASK_SECRET_KEY.
     # - Otherwise persist a generated key under instance/ so reloaders/workers won't invalidate sessions.
@@ -61,9 +59,6 @@ def create_app(test_config=None):
         SECRET_KEY=secret_key,
         DATABASE=os.getenv("DATABASE_PATH", str(default_db_path)),
         PAPERS_DATA_DIR=str(data_dir_env),
-        NO_AUTH_MODE=no_auth_mode,
-        DEFAULT_USER_USERNAME=os.getenv("DEFAULT_USER_USERNAME", "guest"),
-        DEFAULT_USER_PASSWORD=os.getenv("DEFAULT_USER_PASSWORD", "guest"),
         # Session hardening (keep defaults explicit; do not force Secure cookies on localhost HTTP).
         SESSION_COOKIE_HTTPONLY=True,
         # Avoid cookie collisions if other local Flask apps share the same domain.
@@ -153,7 +148,6 @@ def create_app(test_config=None):
             payload = {"status": "ok"}
             # Lightweight diagnostics for debugging "session flapping"/routing issues.
             payload["env"] = {
-                "no_auth_mode": bool(app.config.get("NO_AUTH_MODE")),
                 "session_cookie_name": app.config.get("SESSION_COOKIE_NAME"),
                 "papers_data_dir": app.config.get("PAPERS_DATA_DIR"),
             }
@@ -201,7 +195,6 @@ def create_app(test_config=None):
             "status": "ok",
             "utc": now,
             "env": {
-                "no_auth_mode": bool(app.config.get("NO_AUTH_MODE")),
                 "session_cookie_name": app.config.get("SESSION_COOKIE_NAME"),
                 "papers_data_dir": app.config.get("PAPERS_DATA_DIR"),
             },
