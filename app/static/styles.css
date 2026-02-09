@@ -312,63 +312,66 @@ a:hover {
   padding: 4px 8px;
 }
 
-.feed-list {
-  display: flex;
-  flex-direction: column;
-}
-
-.paper-item {
-  display: flex;
+.feed-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
   padding: 14px;
-  border-bottom: 1px solid rgba(226, 232, 240, 0.85);
+}
+
+.paper-entry {
+  content-visibility: auto;
+  contain-intrinsic-size: 360px;
+}
+
+.paper-card {
   cursor: pointer;
   background: #ffffff;
-  transition: background 0.12s ease;
-  content-visibility: auto;
-  contain-intrinsic-size: 140px;
-}
-
-.paper-item:hover {
-  background: rgba(248, 250, 252, 0.85);
-}
-
-.paper-item:last-child {
-  border-bottom: none;
-}
-
-.paper-thumb {
-  flex: 0 0 132px;
-  width: 132px;
-  height: 92px;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #f3f4f6, #eef2ff);
-  border: 1px solid rgba(226, 232, 240, 0.9);
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  border-radius: 16px;
   overflow: hidden;
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.05);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.paper-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 16px 38px rgba(15, 23, 42, 0.08);
+}
+
+.paper-card-thumb {
+  height: 168px;
+  background: linear-gradient(135deg, #f3f4f6, #eef2ff);
+  border-bottom: 1px solid rgba(226, 232, 240, 0.85);
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
 }
 
-.paper-thumb img {
-  display: block;
+.paper-card-thumb img {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  display: block;
 }
 
-.paper-main {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.paper-topline {
+.paper-card-body {
+  padding: 12px 12px 12px;
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.paper-card-meta {
+  display: flex;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
   flex-wrap: wrap;
-  margin-bottom: 6px;
 }
 
 .paper-title {
@@ -387,6 +390,10 @@ a:hover {
 .paper-summary {
   margin: 8px 0 0;
   color: var(--muted);
+}
+
+.paper-card-tags {
+  margin-top: 2px;
 }
 
 .paper-actions {
@@ -430,14 +437,20 @@ a:hover {
 }
 
 @media (max-width: 768px) {
-  .paper-item {
-    flex-direction: column;
+  .feed-grid {
+    grid-template-columns: 1fr;
+    gap: 12px;
+    padding: 12px;
   }
 
-  .paper-thumb {
-    width: 100%;
-    height: 170px;
-    flex: 0 0 auto;
+  .paper-card-thumb {
+    height: 200px;
+  }
+}
+
+@media (min-width: 769px) and (max-width: 1100px) {
+  .feed-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

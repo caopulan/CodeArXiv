@@ -19,7 +19,7 @@
             <div class="feed-section-count">{{ group_papers|length }}</div>
           </header>
 
-          <div class="feed-list">
+          <div class="feed-grid">
             {% set visible = group_papers[:initial_limit] %}
             {% for paper in visible %}
               {% set paper_meta = {'pos': loop.index, 'total': group_papers|length} %}
@@ -361,7 +361,7 @@
     const targetDate = {{ target_date.strftime('%Y-%m-%d')|tojson }};
     const lastSeenId = {{ (history['paper_id'] if history else None)|tojson }};
     const lastPosition = {{ (history['position'] if history else 0)|tojson }};
-    const cards = document.querySelectorAll('.paper-item');
+    const cards = document.querySelectorAll('.paper-entry');
     let lastSeen = lastSeenId;
 
     if (lastPosition) {
@@ -385,7 +385,7 @@
     }, { threshold: 0.5 });
 
     function observeCards(root = document) {
-      root.querySelectorAll?.('.paper-item')?.forEach(card => observer.observe(card));
+      root.querySelectorAll?.('.paper-entry')?.forEach(card => observer.observe(card));
     }
 
     observeCards(document);
@@ -438,7 +438,7 @@
         const html = payload?.html || '';
         if (html) {
           const section = sentinel.closest('.feed-section');
-          const list = section?.querySelector('.feed-list');
+          const list = section?.querySelector('.feed-grid');
           if (list) {
             const wrapper = document.createElement('div');
             wrapper.innerHTML = html;
