@@ -1,6 +1,9 @@
 import os
 import secrets
 import datetime as dt
+import hashlib
+import socket
+import subprocess
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -17,7 +20,9 @@ from .services import paper_store
 
 def create_app(test_config=None):
     """Application factory for the frontend-only paper viewer."""
-    load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
+    # Prefer the repo's .env over ambient environment variables to avoid
+    # surprising behavior across reloaders/workers (e.g. NO_AUTH_MODE toggling).
+    load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env", override=True)
     app = Flask(__name__, instance_relative_config=True)
 
     default_db_path = Path(app.instance_path) / "app.db"
@@ -34,6 +39,7 @@ def create_app(test_config=None):
     # - Prefer an explicit FLASK_SECRET_KEY.
     # - Otherwise persist a generated key under instance/ so reloaders/workers won't invalidate sessions.
     raw_secret = (os.getenv("FLASK_SECRET_KEY") or "").strip()
+    secret_source = "env"
     if raw_secret and raw_secret.lower() != "change-me":
         secret_key = raw_secret
     else:
@@ -42,12 +48,15 @@ def create_app(test_config=None):
             key_path.parent.mkdir(parents=True, exist_ok=True)
             if key_path.exists():
                 secret_key = key_path.read_text(encoding="utf-8").strip()
+                secret_source = "instance_file"
             else:
                 secret_key = secrets.token_hex(32)
                 key_path.write_text(secret_key, encoding="utf-8")
+                secret_source = "instance_file"
         except Exception:
             # Fall back to an in-memory key; worst case sessions may reset on reload.
             secret_key = secrets.token_hex(32)
+            secret_source = "random"
     app.config.from_mapping(
         SECRET_KEY=secret_key,
         DATABASE=os.getenv("DATABASE_PATH", str(default_db_path)),
@@ -115,6 +124,34 @@ def create_app(test_config=None):
     def health():
         dates = paper_store.list_dates()
         payload = {"status": "ok"}
+        # Lightweight diagnostics for debugging "session flapping"/routing issues.
+        payload["env"] = {
+            "no_auth_mode": bool(app.config.get("NO_AUTH_MODE")),
+            "session_cookie_name": app.config.get("SESSION_COOKIE_NAME"),
+            "papers_data_dir": app.config.get("PAPERS_DATA_DIR"),
+        }
+        payload["proc"] = {
+            "hostname": socket.gethostname(),
+            "pid": os.getpid(),
+        }
+        try:
+            fp = hashlib.sha256((app.config.get("SECRET_KEY") or "").encode("utf-8")).hexdigest()[:10]
+        except Exception:
+            fp = None
+        payload["secret_key"] = {"source": secret_source, "fp": fp}
+        try:
+            repo_root = Path(app.root_path).parent
+            if (repo_root / ".git").exists():
+                sha = (
+                    subprocess.check_output(["git", "-C", str(repo_root), "rev-parse", "--short", "HEAD"])
+                    .decode("utf-8", "ignore")
+                    .strip()
+                )
+            else:
+                sha = None
+        except Exception:
+            sha = None
+        payload["build"] = {"git_sha": sha}
         if dates:
             payload["dates"] = {
                 "count": len(dates),
