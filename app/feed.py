@@ -252,6 +252,18 @@ def _latest_pub_date() -> dt.date:
         return latest
     return dt.date.today()
 
+def _favorite_paper_ids_for_user(db_conn, user_id: int) -> set[str]:
+    rows = db_conn.execute(
+        """
+        SELECT FavoritePapers.paper_id
+        FROM FavoritePapers
+        JOIN Favorites ON Favorites.id = FavoritePapers.favorite_id
+        WHERE Favorites.user_id = ?
+        """,
+        (user_id,),
+    ).fetchall()
+    return {row["paper_id"] for row in rows}
+
 
 def _format_paper(row) -> Dict[str, Any]:
     data = dict(row)
@@ -783,7 +795,7 @@ def index():
         papers.sort(key=lambda p: p.get("similarity") or 0, reverse=True)
 
     grouped = {"white": [], "neutral": [], "black": []}
-
+    # Use the already-computed whitelist/blacklist sets for grouping and keep the same sort behavior.
     def _classify_tags(tag_list: list[str]) -> str:
         tags_set = set(tag_list or [])
         if blacklist_tags and tags_set.intersection(blacklist_tags):
@@ -791,38 +803,19 @@ def index():
         if whitelist_tags and tags_set.intersection(whitelist_tags):
             return "white"
         return "neutral"
-
     for paper in papers:
         group_key = _classify_tags(paper["tags"])
         paper["filter_group"] = group_key
         grouped[group_key].append(paper)
-
     def _sort_key(item):
         return (item.get("similarity") or 0) * -1
-
     for key in grouped:
         grouped[key].sort(key=_sort_key)
-
     papers = grouped["white"] + grouped["neutral"] + grouped["black"]
     paper_groups = [
-        {
-            "key": "white",
-            "title": copy["group_white_title"],
-            "subtitle": copy["group_white_subtitle"],
-            "papers": grouped["white"],
-        },
-        {
-            "key": "neutral",
-            "title": copy["group_neutral_title"],
-            "subtitle": copy["group_neutral_subtitle"],
-            "papers": grouped["neutral"],
-        },
-        {
-            "key": "black",
-            "title": copy["group_black_title"],
-            "subtitle": copy["group_black_subtitle"],
-            "papers": grouped["black"],
-        },
+        {"key": "white", "title": copy["group_white_title"], "subtitle": copy["group_white_subtitle"], "papers": grouped["white"]},
+        {"key": "neutral", "title": copy["group_neutral_title"], "subtitle": copy["group_neutral_subtitle"], "papers": grouped["neutral"]},
+        {"key": "black", "title": copy["group_black_title"], "subtitle": copy["group_black_subtitle"], "papers": grouped["black"]},
     ]
 
     history_row = None
@@ -844,16 +837,7 @@ def index():
 
     favorite_paper_ids = set()
     if g.user:
-        rows = db_conn.execute(
-            """
-            SELECT FavoritePapers.paper_id
-            FROM FavoritePapers
-            JOIN Favorites ON Favorites.id = FavoritePapers.favorite_id
-            WHERE Favorites.user_id = ?
-            """,
-            (g.user["id"],),
-        ).fetchall()
-        favorite_paper_ids = {row["paper_id"] for row in rows}
+        favorite_paper_ids = _favorite_paper_ids_for_user(db_conn, g.user["id"])
 
     selected_favorite_names = [
         favorites_lookup[fid]["name"] for fid in selected_sim_favorites if fid in favorites_lookup
@@ -872,6 +856,120 @@ def index():
         current_language=language,
         lang_copy=copy,
     )
+
+
+@bp.route("/more")
+@login_required
+def more():
+    db_conn = get_db()
+    language = _current_language()
+    copy = _copy_for_language(language)
+
+    group = (request.args.get("group") or "").strip().lower()
+    if group not in ("white", "neutral", "black"):
+        group = "neutral"
+    offset = request.args.get("offset", type=int) or 0
+    limit = request.args.get("limit", type=int) or 24
+    if offset < 0:
+        offset = 0
+    limit = max(1, min(limit, 60))
+
+    date_str = request.args.get("date")
+    target_date = _parse_date_value(date_str) if date_str else None
+    if target_date is None:
+        target_date = getattr(g, "nav_date", None)
+    if not isinstance(target_date, dt.date):
+        target_date = _latest_pub_date()
+
+    # Recreate the same filter inputs as the main page (but avoid writing filters on every chunk request).
+    saved_filters = _load_filters(g.user["id"]) if g.user else None
+    user_favorites = favorites_service.list_favorites(g.user["id"]) if g.user else []
+    favorites_lookup = {fav["id"]: fav for fav in user_favorites}
+    saved_filters = saved_filters or {
+        "categories": [],
+        "tags": {"whitelist": [], "blacklist": []},
+        "sim_favorites": [],
+        "last_date": None,
+        "last_paper_id": None,
+        "last_position": 0,
+    }
+
+    category_options = list(DEFAULT_CATEGORIES)
+    selected_categories = request.args.getlist("category") or saved_filters.get("categories", [])
+    selected_categories = [c for c in selected_categories if c in category_options]
+    tag_filters = saved_filters.get("tags") or {"whitelist": [], "blacklist": []}
+
+    selected_sim_favorites: list[int] = []
+    saved_has_record = bool(saved_filters.get("has_record"))
+    if g.user:
+        selected_sim_favorites = request.args.getlist("sim_favorite")
+        selected_sim_favorites = [
+            int(fid) for fid in selected_sim_favorites if str(fid).isdigit()
+        ]
+        if not selected_sim_favorites:
+            selected_sim_favorites = saved_filters.get("sim_favorites", [])
+        available_ids = [fav["id"] for fav in user_favorites]
+        selected_sim_favorites = [
+            fid for fid in selected_sim_favorites if fid in available_ids
+        ]
+        if not selected_sim_favorites and not saved_has_record:
+            selected_sim_favorites = available_ids
+
+    # Build grouped papers and slice.
+    grouped = {"white": [], "neutral": [], "black": []}
+    whitelist_tags = set((tag_filters or {}).get("whitelist") or [])
+    blacklist_tags = set((tag_filters or {}).get("blacklist") or [])
+    rows = paper_store.load_date(target_date)
+    papers = [_format_paper(row) for row in rows]
+    papers = _localize_papers(papers, language)
+    papers = _strip_images_if_missing(papers, target_date)
+    if selected_categories:
+        papers = [
+            p
+            for p in papers
+            if set(selected_categories).intersection(set(_split_categories(p["category"])))
+        ]
+    interest_vectors = []
+    if g.user:
+        interest_vectors = recommendations.get_favorite_embeddings(
+            g.user["id"], selected_sim_favorites or None
+        )
+    if interest_vectors:
+        recommendations.attach_similarity(papers, interest_vectors)
+        papers.sort(key=lambda p: p.get("similarity") or 0, reverse=True)
+    def _classify_tags(tag_list: list[str]) -> str:
+        tags_set = set(tag_list or [])
+        if blacklist_tags and tags_set.intersection(blacklist_tags):
+            return "black"
+        if whitelist_tags and tags_set.intersection(whitelist_tags):
+            return "white"
+        return "neutral"
+    for paper in papers:
+        group_key = _classify_tags(paper["tags"])
+        paper["filter_group"] = group_key
+        grouped[group_key].append(paper)
+    def _sort_key(item):
+        return (item.get("similarity") or 0) * -1
+    for key in grouped:
+        grouped[key].sort(key=_sort_key)
+
+    group_list = grouped.get(group, [])
+    chunk = group_list[offset : offset + limit]
+    next_offset = offset + len(chunk)
+    has_more = next_offset < len(group_list)
+
+    favorite_paper_ids = set()
+    if g.user:
+        favorite_paper_ids = _favorite_paper_ids_for_user(db_conn, g.user["id"])
+
+    html = render_template(
+        "_paper_items.html",
+        papers=chunk,
+        favorite_paper_ids=favorite_paper_ids,
+        lang_copy=copy,
+        paper_meta=None,
+    )
+    return jsonify({"html": html, "next_offset": next_offset, "has_more": has_more})
 
 
 @bp.route("/data/images/<path:path>")

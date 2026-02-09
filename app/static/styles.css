@@ -325,6 +325,8 @@ a:hover {
   cursor: pointer;
   background: #ffffff;
   transition: background 0.12s ease;
+  content-visibility: auto;
+  contain-intrinsic-size: 140px;
 }
 
 .paper-item:hover {
@@ -394,6 +396,25 @@ a:hover {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.feed-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 14px;
+  border-top: 1px solid rgba(226, 232, 240, 0.9);
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.8), #fff);
+}
+
+.feed-more-btn {
+  border-radius: 10px;
+  font-weight: 700;
+}
+
+.feed-more-hint {
+  white-space: nowrap;
 }
 
 .feed-section-white .feed-section-header {

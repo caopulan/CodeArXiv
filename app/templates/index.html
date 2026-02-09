@@ -4,6 +4,7 @@
 {% if not papers %}
   <div class="alert alert-info shadow-sm">No papers found for this date. Try another day.</div>
 {% else %}
+  {% set initial_limit = 24 %}
   <div class="feed-sections">
     {% for group in paper_groups %}
       {% set group_key = group['key'] %}
@@ -19,85 +20,25 @@
           </header>
 
           <div class="feed-list">
-            {% for paper in group_papers %}
-              <article
-                class="paper-item"
-                data-paper-id="{{ paper.id }}"
-                id="paper-{{ paper.id }}"
-                onclick="window.location='{{ url_for('feed.paper_detail', paper_id=paper.id) }}'">
-                <div class="paper-thumb" aria-hidden="true">
-                  {% if paper.thumb_small_url or paper.image_url %}
-                    <img src="{{ paper.thumb_small_url or paper.image_url }}" alt="Thumbnail for {{ paper.id }}">
-                  {% else %}
-                    <span class="text-muted small">No thumbnail</span>
-                  {% endif %}
-                </div>
-
-                <div class="paper-main">
-                  <div class="paper-topline">
-                    <div class="d-flex align-items-center gap-2 flex-wrap">
-                      <span class="badge bg-secondary">{{ paper.category or 'Unknown' }}</span>
-                      {% if paper.similarity is not none %}
-                        {% set sim = paper.similarity %}
-                        {% set sim_class = 'bg-success-subtle text-success' %}
-                        {% if sim < 0.7 %}{% set sim_class = 'bg-warning-subtle text-dark' %}{% endif %}
-                        {% if sim < 0.4 %}{% set sim_class = 'bg-secondary-subtle text-secondary' %}{% endif %}
-                        <span class="chip {{ sim_class }}">{{ "%.2f"|format(sim) }}</span>
-                      {% endif %}
-                      {% if paper.filter_group == 'black' %}
-                        <span class="badge bg-dark text-white opacity-75">{{ lang_copy.badge_blacklist }}</span>
-                      {% elif paper.filter_group == 'white' %}
-                        <span class="badge bg-primary-subtle text-primary">{{ lang_copy.badge_whitelist }}</span>
-                      {% endif %}
-                    </div>
-
-                    <div class="d-flex flex-wrap gap-1">
-                      {% for tag in paper.tags %}
-                        <span class="tag-badge">{{ tag }}</span>
-                      {% endfor %}
-                    </div>
-                  </div>
-
-                  <h2 class="paper-title">
-                    {{ paper.display_title }}
-                    <span class="text-muted small">({{ loop.index }}/{{ loop.length }})</span>
-                  </h2>
-                  {% if paper.display_subtitle %}
-                    <p class="paper-subtitle fst-italic">{{ paper.display_subtitle }}</p>
-                  {% endif %}
-
-                  <p class="paper-summary">{{ paper.display_summary|truncate(220, True, '…') }}</p>
-
-                  <div class="paper-actions">
-                    <div class="d-flex gap-2 flex-wrap">
-                      <button class="btn btn-sm btn-outline-secondary position-relative" onclick="event.stopPropagation(); previewThumb('{{ paper.thumb_full_url or paper.image_url or '' }}')" aria-label="Preview thumbnail">🔍</button>
-                      {% set saved = paper.id in favorite_paper_ids %}
-                      <button class="btn btn-sm position-relative fav-btn {% if saved %}btn-success{% else %}btn-outline-success{% endif %}" data-paper-id="{{ paper.id }}" data-saved="{{ 'true' if saved else 'false' }}" onclick="event.stopPropagation(); openFavModal('{{ paper.id }}', this)">{{ lang_copy.favorite_saved if saved else lang_copy.favorite_unsaved }}</button>
-                      {% if paper.github_url %}
-                        <a class="btn btn-sm btn-outline-dark position-relative d-flex align-items-center justify-content-center logo-btn" href="{{ paper.github_url }}" target="_blank" rel="noopener" onclick="event.stopPropagation();">
-                          <svg class="logo-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                            <path fill="currentColor" d="M12 1C5.923 1 1 5.923 1 12c0 4.867 3.149 8.979 7.521 10.436.55.096.756-.233.756-.522 0-.262-.013-1.128-.013-2.049-2.764.509-3.479-.674-3.699-1.292-.124-.317-.66-1.293-1.127-1.554-.385-.207-.936-.715-.014-.729.866-.014 1.485.797 1.691 1.128.99 1.663 2.571 1.196 3.204.907.096-.715.385-1.196.701-1.471-2.448-.275-5.005-1.224-5.005-5.432 0-1.196.426-2.186 1.128-2.956-.111-.275-.496-1.402.11-2.915 0 0 .921-.288 3.024 1.128a10.193 10.193 0 0 1 2.75-.371c.936 0 1.871.123 2.75.371 2.104-1.43 3.025-1.128 3.025-1.128.605 1.513.221 2.64.111 2.915.701.77 1.127 1.747 1.127 2.956 0 4.222-2.571 5.157-5.019 5.432.399.344.743 1.004.743 2.035 0 1.471-.014 2.654-.014 3.025 0 .289.206.632.756.522C19.851 20.979 23 16.854 23 12c0-6.077-4.922-11-11-11Z" />
-                          </svg>
-                          <span class="visually-hidden">GitHub</span>
-                        </a>
-                      {% endif %}
-                    </div>
-                    <div class="d-flex gap-2 flex-wrap">
-                      <a class="btn btn-sm btn-outline-secondary position-relative d-flex align-items-center justify-content-center logo-btn" href="https://arxiv.org/abs/{{ paper.id }}" target="_blank" rel="noopener" onclick="event.stopPropagation();">
-                        <img src="{{ url_for('static', filename='logos/arxiv.png') }}" alt="arXiv" class="logo-icon">
-                        <span class="visually-hidden">arXiv</span>
-                      </a>
-                      <a class="btn btn-sm btn-outline-primary position-relative d-flex align-items-center justify-content-center logo-btn" href="https://www.alphaxiv.org/abs/{{ paper.id }}" target="_blank" rel="noopener" onclick="event.stopPropagation();">
-                        <img src="{{ url_for('static', filename='logos/alphaxiv.ico') }}" alt="alphaXiv" class="logo-icon">
-                        <span class="visually-hidden">alphaXiv</span>
-                      </a>
-                      <a class="btn btn-sm btn-outline-dark position-relative" href="https://papers.cool/arxiv/{{ paper.id }}" target="_blank" rel="noopener" onclick="event.stopPropagation();">cool</a>
-                    </div>
-                  </div>
-                </div>
-              </article>
+            {% set visible = group_papers[:initial_limit] %}
+            {% for paper in visible %}
+              {% set paper_meta = {'pos': loop.index, 'total': group_papers|length} %}
+              {% include "_paper_item.html" %}
             {% endfor %}
           </div>
+
+          {% if group_papers|length > initial_limit %}
+            <div
+              class="feed-more"
+              data-group="{{ group_key }}"
+              data-offset="{{ initial_limit }}"
+              data-limit="24"
+              role="status"
+              aria-label="Load more">
+              <button class="btn btn-sm btn-outline-secondary feed-more-btn" type="button">Load more</button>
+              <span class="feed-more-hint text-muted small">Scroll to load more</span>
+            </div>
+          {% endif %}
         </section>
       {% endif %}
     {% endfor %}
@@ -443,7 +384,11 @@
       });
     }, { threshold: 0.5 });
 
-    cards.forEach(card => observer.observe(card));
+    function observeCards(root = document) {
+      root.querySelectorAll?.('.paper-item')?.forEach(card => observer.observe(card));
+    }
+
+    observeCards(document);
 
     function scheduleSave() {
       clearTimeout(saveTimeout);
@@ -459,6 +404,72 @@
         }).catch(() => {});
       }, 800);
     }
+
+    // Incremental loading per section (avoids loading all thumbnails at once).
+    const moreUrl = {{ url_for('feed.more')|tojson }};
+    const moreObserver = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (!entry.isIntersecting) return;
+        const sentinel = entry.target;
+        loadMoreForSentinel(sentinel);
+      });
+    }, { rootMargin: '600px 0px' });
+
+    async function loadMoreForSentinel(sentinel) {
+      if (!sentinel || sentinel.dataset.loading === '1') return;
+      const group = sentinel.dataset.group || '';
+      const offset = parseInt(sentinel.dataset.offset || '0', 10) || 0;
+      const limit = parseInt(sentinel.dataset.limit || '24', 10) || 24;
+      if (!group) return;
+
+      sentinel.dataset.loading = '1';
+      const btn = sentinel.querySelector('.feed-more-btn');
+      if (btn) btn.disabled = true;
+
+      const params = new URLSearchParams(window.location.search || '');
+      params.set('group', group);
+      params.set('offset', String(offset));
+      params.set('limit', String(limit));
+
+      try {
+        const res = await fetch(moreUrl + '?' + params.toString(), { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error('bad_status');
+        const payload = await res.json();
+        const html = payload?.html || '';
+        if (html) {
+          const section = sentinel.closest('.feed-section');
+          const list = section?.querySelector('.feed-list');
+          if (list) {
+            const wrapper = document.createElement('div');
+            wrapper.innerHTML = html;
+            const appended = Array.from(wrapper.children);
+            appended.forEach(node => list.appendChild(node));
+            observeCards(list);
+          }
+        }
+        const nextOffset = Number(payload?.next_offset ?? (offset + limit));
+        const hasMore = Boolean(payload?.has_more);
+        if (hasMore) {
+          sentinel.dataset.offset = String(nextOffset);
+          if (btn) btn.disabled = false;
+          sentinel.dataset.loading = '0';
+        } else {
+          moreObserver.unobserve(sentinel);
+          sentinel.remove();
+        }
+      } catch (_) {
+        if (btn) btn.disabled = false;
+        sentinel.dataset.loading = '0';
+      }
+    }
+
+    document.querySelectorAll('.feed-more').forEach(sentinel => {
+      const btn = sentinel.querySelector('.feed-more-btn');
+      if (btn) {
+        btn.addEventListener('click', () => loadMoreForSentinel(sentinel));
+      }
+      moreObserver.observe(sentinel);
+    });
   })();
 </script>
 {% endblock %}
