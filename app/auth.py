@@ -19,6 +19,8 @@ from .security import safe_redirect_target
 
 bp = Blueprint("auth", __name__, url_prefix="/auth")
 
+_RESERVED_USERNAMES = {"guest"}
+
 
 def _normalize_user_row(row):
     if row is None:
@@ -164,6 +166,8 @@ def signup():
         min_pw_len = int(current_app.config.get("MIN_PASSWORD_LENGTH", 8))
         if not username or not password:
             error = "Username and password are required."
+        elif username.lower() in _RESERVED_USERNAMES:
+            error = "This username is reserved."
         elif len(username) > max_user_len:
             error = "Username is too long."
         elif len(password) < min_pw_len:
@@ -208,6 +212,8 @@ def login():
         max_user_len = int(current_app.config.get("MAX_USERNAME_LENGTH", 64))
         if len(username) > max_user_len:
             username = username[:max_user_len]
+        if username.lower() in _RESERVED_USERNAMES:
+            error = "This account is disabled."
         if _is_rate_limited(db_conn, username=username, ip=ip):
             flash("Too many login attempts. Please try again later.", "danger")
             _record_auth_attempt(db_conn, username=username, ip=ip, success=False)
