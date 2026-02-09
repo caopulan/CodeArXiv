@@ -712,6 +712,13 @@ def index():
             return redirect(url_for("feed.index", **query_args))
 
     g.nav_date = target_date
+    # If the user explicitly chose a date, persist that preference immediately.
+    # This avoids relying on the /history scroll observer to update UserFilters.last_date.
+    if g.user and date_str and isinstance(target_date, dt.date):
+        try:
+            _save_filters(g.user["id"], last_date=target_date.isoformat())
+        except Exception:
+            pass
     rows = paper_store.load_date(target_date)
 
     category_options = list(DEFAULT_CATEGORIES)

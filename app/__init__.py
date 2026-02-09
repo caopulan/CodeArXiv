@@ -12,6 +12,7 @@ from . import cli as cli_commands
 from . import db
 from . import feed
 from . import security
+from .services import paper_store
 
 
 def create_app(test_config=None):
@@ -112,6 +113,16 @@ def create_app(test_config=None):
 
     @app.route("/health")
     def health():
-        return jsonify({"status": "ok"}), 200
+        dates = paper_store.list_dates()
+        payload = {"status": "ok"}
+        if dates:
+            payload["dates"] = {
+                "count": len(dates),
+                "min": dates[0].isoformat(),
+                "max": dates[-1].isoformat(),
+            }
+        else:
+            payload["dates"] = {"count": 0, "min": None, "max": None}
+        return jsonify(payload), 200
 
     return app
