@@ -4,7 +4,8 @@ import datetime as dt
 from pathlib import Path
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify
+from flask import Flask, jsonify, flash, redirect, request, session, url_for
+from werkzeug.exceptions import HTTPException
 
 from . import auth
 from . import cli as cli_commands
@@ -89,7 +90,21 @@ def create_app(test_config=None):
 
     @app.before_request
     def csrf_protect():
-        security.verify_csrf()
+        try:
+            security.verify_csrf()
+        except HTTPException as exc:
+            # If the session cookie is missing/rotated, CSRF validation will fail.
+            # For login/signup, prefer a friendly retry over a hard 400.
+            if (
+                exc.code == 400
+                and request.method == "POST"
+                and request.endpoint in ("auth.login", "auth.signup")
+            ):
+                # Reset any stale session and ask the user to retry with a fresh token.
+                session.clear()
+                flash("Session expired. Please try again.", "warning")
+                return redirect(url_for(request.endpoint))
+            raise
 
     @app.context_processor
     def inject_csrf_token():
