@@ -28,8 +28,24 @@ def create_app(test_config=None):
         data_dir_env = data_dir_env.resolve()
     no_auth_env = os.getenv("NO_AUTH_MODE", "false").lower()
     no_auth_mode = no_auth_env in ("1", "true", "yes", "on")
-    # Avoid a hard-coded default secret key; encourage setting FLASK_SECRET_KEY in .env.
-    secret_key = (os.getenv("FLASK_SECRET_KEY") or "").strip() or secrets.token_hex(32)
+    # Session stability:
+    # - Prefer an explicit FLASK_SECRET_KEY.
+    # - Otherwise persist a generated key under instance/ so reloaders/workers won't invalidate sessions.
+    raw_secret = (os.getenv("FLASK_SECRET_KEY") or "").strip()
+    if raw_secret and raw_secret.lower() != "change-me":
+        secret_key = raw_secret
+    else:
+        key_path = Path(app.instance_path) / "secret_key"
+        try:
+            key_path.parent.mkdir(parents=True, exist_ok=True)
+            if key_path.exists():
+                secret_key = key_path.read_text(encoding="utf-8").strip()
+            else:
+                secret_key = secrets.token_hex(32)
+                key_path.write_text(secret_key, encoding="utf-8")
+        except Exception:
+            # Fall back to an in-memory key; worst case sessions may reset on reload.
+            secret_key = secrets.token_hex(32)
     app.config.from_mapping(
         SECRET_KEY=secret_key,
         DATABASE=os.getenv("DATABASE_PATH", str(default_db_path)),
@@ -39,6 +55,8 @@ def create_app(test_config=None):
         DEFAULT_USER_PASSWORD=os.getenv("DEFAULT_USER_PASSWORD", "guest"),
         # Session hardening (keep defaults explicit; do not force Secure cookies on localhost HTTP).
         SESSION_COOKIE_HTTPONLY=True,
+        # Avoid cookie collisions if other local Flask apps share the same domain.
+        SESSION_COOKIE_NAME=os.getenv("SESSION_COOKIE_NAME", "codearxiv_session"),
         SESSION_COOKIE_SAMESITE=os.getenv("SESSION_COOKIE_SAMESITE", "Lax"),
         SESSION_COOKIE_SECURE=(os.getenv("SESSION_COOKIE_SECURE", "false").lower() in ("1", "true", "yes", "on")),
         PERMANENT_SESSION_LIFETIME=dt.timedelta(
