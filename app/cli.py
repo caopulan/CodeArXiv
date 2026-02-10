@@ -30,6 +30,26 @@ def recompute_favorites_cmd(user_id: Optional[int]):
 def delete_guest_cmd():
     """Delete the legacy 'guest' user and cascade-delete their data."""
     db_conn = get_db()
+    # Ensure referential integrity is satisfiable before enabling cascades.
+    db_conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS Papers (
+            id TEXT PRIMARY KEY
+        );
+        """
+    )
+    for tbl in ("FavoritePapers", "BrowsingHistory"):
+        try:
+            db_conn.execute(
+                f"""
+                INSERT OR IGNORE INTO Papers (id)
+                SELECT DISTINCT paper_id FROM {tbl}
+                WHERE paper_id IS NOT NULL AND TRIM(paper_id) != ''
+                """
+            )
+        except Exception:
+            continue
+    db_conn.commit()
     row = db_conn.execute("SELECT id FROM Users WHERE username = ?", ("guest",)).fetchone()
     if row is None:
         click.echo("No guest user found.")

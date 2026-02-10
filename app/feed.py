@@ -1319,6 +1319,8 @@ def save_history():
     if not paper_id:
         return {"status": "ignored"}, 400
     db_conn = get_db()
+    # Some deployments enforce BrowsingHistory.paper_id -> Papers.id.
+    db_conn.execute("INSERT OR IGNORE INTO Papers (id) VALUES (?)", (paper_id,))
     # Persist last reading position per (user, date).
     db_conn.execute(
         """

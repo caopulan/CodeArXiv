@@ -5,6 +5,12 @@ CREATE TABLE IF NOT EXISTS Users (
     language_preference TEXT DEFAULT 'en'
 );
 
+-- A minimal paper id registry used only for referential integrity.
+-- Paper content is stored in JSON files under PAPERS_DATA_DIR.
+CREATE TABLE IF NOT EXISTS Papers (
+    id TEXT PRIMARY KEY
+);
+
 CREATE TABLE IF NOT EXISTS Favorites (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -19,7 +25,8 @@ CREATE TABLE IF NOT EXISTS FavoritePapers (
     favorite_id INTEGER NOT NULL,
     paper_id TEXT NOT NULL,
     PRIMARY KEY (favorite_id, paper_id),
-    FOREIGN KEY (favorite_id) REFERENCES Favorites (id) ON DELETE CASCADE
+    FOREIGN KEY (favorite_id) REFERENCES Favorites (id) ON DELETE CASCADE,
+    FOREIGN KEY (paper_id) REFERENCES Papers (id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS BrowsingHistory (
@@ -28,7 +35,8 @@ CREATE TABLE IF NOT EXISTS BrowsingHistory (
     date DATE NOT NULL,
     position INTEGER,
     PRIMARY KEY (user_id, date),
-    FOREIGN KEY (user_id) REFERENCES Users (id) ON DELETE CASCADE
+    FOREIGN KEY (user_id) REFERENCES Users (id) ON DELETE CASCADE,
+    FOREIGN KEY (paper_id) REFERENCES Papers (id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS UserFilters (

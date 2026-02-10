@@ -77,6 +77,34 @@ def apply_light_migrations() -> None:
     main_db = get_db()
     if not _table_exists(main_db, "Users"):
         return
+    # Ensure the minimal Papers table exists (older deployments used FK constraints to it).
+    if not _table_exists(main_db, "Papers"):
+        main_db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS Papers (
+                id TEXT PRIMARY KEY
+            );
+            """
+        )
+        main_db.commit()
+    else:
+        # Ensure the table is usable even if created with a slightly different schema.
+        pass
+
+    # Backfill Papers from any existing references to avoid FK errors once foreign_keys=ON.
+    for tbl in ("FavoritePapers", "BrowsingHistory"):
+        if _table_exists(main_db, tbl):
+            try:
+                main_db.execute(
+                    f"""
+                    INSERT OR IGNORE INTO Papers (id)
+                    SELECT DISTINCT paper_id FROM {tbl}
+                    WHERE paper_id IS NOT NULL AND TRIM(paper_id) != ''
+                    """
+                )
+            except Exception:
+                continue
+    main_db.commit()
     _ensure_columns(
         main_db,
         "Users",

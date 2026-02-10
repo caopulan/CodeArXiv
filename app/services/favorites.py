@@ -68,6 +68,8 @@ def ensure_favorite(user_id: int, name: str) -> int:
 
 def add_paper_to_favorite(favorite_id: int, paper_id: str) -> bool:
     db_conn = db.get_db()
+    # Some deployments enforce FavoritePapers.paper_id -> Papers.id.
+    db_conn.execute("INSERT OR IGNORE INTO Papers (id) VALUES (?)", (paper_id,))
     cursor = db_conn.execute(
         "INSERT OR IGNORE INTO FavoritePapers (favorite_id, paper_id) VALUES (?, ?)",
         (favorite_id, paper_id),
